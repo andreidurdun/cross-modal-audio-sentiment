@@ -1,0 +1,28 @@
+# Environments
+.venv/
+.env
+__pycache__/
+*.pyc
+*.py[cod]
+.DS_Store
+
+# Data artifacts
+data/
+MSP_Podcast/
+*.csv
+*.xlsx
+*.zip
+*.tar.gz
+*.wav
+
+# Model checkpoints
+checkpoints/
+logs/
+
+# Notebook noise
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+
