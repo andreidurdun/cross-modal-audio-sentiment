@@ -223,7 +223,7 @@ def main():
     print("=" * 80 + "\n")
 
     best_val_accuracy = 0.0
-    checkpoint_dir = Path("checkpoints/roberta_text_lora")
+    checkpoint_dir = Path("checkpoints/roberta_text_en")
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(num_epochs):
@@ -249,7 +249,7 @@ def main():
             print(f"✓ Best model saved: {best_checkpoint}")
 
     print("\n" + "=" * 80)
-    print("✅ Training complete!")
+    print(" Training complete!")
     print("=" * 80)
 
 

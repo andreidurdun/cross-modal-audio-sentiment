@@ -19,7 +19,7 @@ from src.utils.helpers import set_seed
 
 
 DEFAULT_CONFIG_PATH = Path("configs/config.yaml")
-DEFAULT_PARTITIONS: Sequence[str] = ("Train", "Validation")
+DEFAULT_PARTITIONS: Sequence[str] = ("Train", "Development")
 DEFAULT_MAX_FILES: int | None = None
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT_EN_DIR = Path("MSP_Podcast/Transcription_en")
