@@ -1,227 +1,118 @@
-"""
-Cross-modal Cross-attention Transformer (CCMT) layer implementation.
-"""
-
 import torch
-import torch.nn as nn
-import math
+from torch import nn
+from einops import rearrange
 
 
-class CrossAttention(nn.Module):
-    """
-    Cross-attention mechanism between query and key-value modalities.
-    """
-    
-    def __init__(self, hidden_dim, num_heads=8, dropout=0.1):
-        """
-        Args:
-            hidden_dim: Dimension of hidden states
-            num_heads: Number of attention heads
-            dropout: Dropout probability
-        """
+class PreNorm(nn.Module):
+    def __init__(self, dim, fn):
         super().__init__()
-        
-        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
-        
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
-        self.scale = math.sqrt(self.head_dim)
-        
-        # Linear projections for query, key, value
-        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.k_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.v_proj = nn.Linear(hidden_dim, hidden_dim)
-        
-        # Output projection
-        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
-        
-        # Dropout
+        self.norm = nn.LayerNorm(dim)
+        self.fn = fn
+
+    def forward(self, x, q, **kwargs):
+        return self.fn(self.norm(x), q, **kwargs)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, dim, hidden_dim, dropout=0.):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x, q=None):  # q is passed only for easier code
+        return self.net(x)
+
+
+class Attention(nn.Module):
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.):
+        super().__init__()
+        inner_dim = dim_head * heads
+        project_out = not (heads == 1 and dim_head == dim)
+
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+
+        self.attend = nn.Softmax(dim=-1)
         self.dropout = nn.Dropout(dropout)
-    
-    def forward(self, query, key, value, key_mask=None):
-        """
-        Forward pass for cross-attention.
-        
-        Args:
-            query: Query tensor of shape (batch_size, query_len, hidden_dim)
-            key: Key tensor of shape (batch_size, key_len, hidden_dim)
-            value: Value tensor of shape (batch_size, value_len, hidden_dim)
-            key_mask: Optional mask for keys (batch_size, key_len)
-        
-        Returns:
-            Output tensor of shape (batch_size, query_len, hidden_dim)
-        """
-        batch_size = query.size(0)
-        
-        # Linear projections
-        Q = self.q_proj(query)  # (batch_size, query_len, hidden_dim)
-        K = self.k_proj(key)    # (batch_size, key_len, hidden_dim)
-        V = self.v_proj(value)  # (batch_size, value_len, hidden_dim)
-        
-        # Reshape for multi-head attention
-        Q = Q.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.view(batch_size, -1, self.num_heads, self.head_dim).transpose(1, 2)
-        
-        # Compute attention scores
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
-        
-        # Apply mask if provided
-        if key_mask is not None:
-            key_mask = key_mask.unsqueeze(1).unsqueeze(2)  # (batch_size, 1, 1, key_len)
-            scores = scores.masked_fill(key_mask == 0, float('-inf'))
-        
-        # Compute attention weights
-        attn_weights = torch.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        
-        # Apply attention to values
-        out = torch.matmul(attn_weights, V)  # (batch_size, num_heads, query_len, head_dim)
-        
-        # Concatenate heads
-        out = out.transpose(1, 2).contiguous().view(batch_size, -1, self.hidden_dim)
-        
-        # Output projection
-        out = self.out_proj(out)
-        
-        return out
+
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias=False)
+        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        ) if project_out else nn.Identity()
+
+    def forward(self, x, q):
+        kv = self.to_kv(x).chunk(2, dim=-1)
+        k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), kv)
+        q = rearrange(self.to_q(q), 'b n (h d) -> b h n d', h=self.heads)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+
+        attn = self.attend(dots)
+        attn = self.dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
 
 
-class CCMTLayer(nn.Module):
-    """
-    Cross-modal Cross-attention Transformer layer.
-    Implements attention between three modalities: audio, text_en, text_fr.
-    """
-    
-    def __init__(self, hidden_dim, num_heads=8, dropout=0.1):
-        """
-        Args:
-            hidden_dim: Dimension of hidden states
-            num_heads: Number of attention heads
-            dropout: Dropout probability
-        """
+class Transformer(nn.Module):
+    def __init__(self, dim, depth, heads, dim_head, mlp_dim, dropout=0.):
         super().__init__()
-        
-        # Cross-attention layers
-        # Audio attends to text_en
-        self.audio_to_text_en = CrossAttention(hidden_dim, num_heads, dropout)
-        # Audio attends to text_fr
-        self.audio_to_text_fr = CrossAttention(hidden_dim, num_heads, dropout)
-        # Text_en attends to audio
-        self.text_en_to_audio = CrossAttention(hidden_dim, num_heads, dropout)
-        # Text_fr attends to audio
-        self.text_fr_to_audio = CrossAttention(hidden_dim, num_heads, dropout)
-        # Text_en attends to text_fr
-        self.text_en_to_text_fr = CrossAttention(hidden_dim, num_heads, dropout)
-        # Text_fr attends to text_en
-        self.text_fr_to_text_en = CrossAttention(hidden_dim, num_heads, dropout)
-        
-        # Feed-forward networks
-        self.ffn_audio = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, hidden_dim),
-            nn.Dropout(dropout)
-        )
-        
-        self.ffn_text_en = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, hidden_dim),
-            nn.Dropout(dropout)
-        )
-        
-        self.ffn_text_fr = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, hidden_dim),
-            nn.Dropout(dropout)
-        )
-        
-        # Layer normalization
-        self.norm_audio_1 = nn.LayerNorm(hidden_dim)
-        self.norm_audio_2 = nn.LayerNorm(hidden_dim)
-        self.norm_text_en_1 = nn.LayerNorm(hidden_dim)
-        self.norm_text_en_2 = nn.LayerNorm(hidden_dim)
-        self.norm_text_fr_1 = nn.LayerNorm(hidden_dim)
-        self.norm_text_fr_2 = nn.LayerNorm(hidden_dim)
-    
-    def forward(self, audio_features, text_en_features, text_fr_features,
-                text_en_mask=None, text_fr_mask=None):
-        """
-        Forward pass through CCMT layer.
-        
-        Args:
-            audio_features: Audio features (batch_size, audio_len, hidden_dim)
-            text_en_features: English text features (batch_size, text_en_len, hidden_dim)
-            text_fr_features: French text features (batch_size, text_fr_len, hidden_dim)
-            text_en_mask: Optional mask for English text
-            text_fr_mask: Optional mask for French text
-        
-        Returns:
-            Fused features for each modality
-        """
-        # Audio cross-attention
-        audio_from_text_en = self.audio_to_text_en(
-            audio_features, text_en_features, text_en_features, text_en_mask
-        )
-        audio_from_text_fr = self.audio_to_text_fr(
-            audio_features, text_fr_features, text_fr_features, text_fr_mask
-        )
-        audio_fused = audio_features + audio_from_text_en + audio_from_text_fr
-        audio_fused = self.norm_audio_1(audio_fused)
-        audio_fused = audio_fused + self.ffn_audio(audio_fused)
-        audio_fused = self.norm_audio_2(audio_fused)
-        
-        # Text_en cross-attention
-        text_en_from_audio = self.text_en_to_audio(
-            text_en_features, audio_features, audio_features
-        )
-        text_en_from_text_fr = self.text_en_to_text_fr(
-            text_en_features, text_fr_features, text_fr_features, text_fr_mask
-        )
-        text_en_fused = text_en_features + text_en_from_audio + text_en_from_text_fr
-        text_en_fused = self.norm_text_en_1(text_en_fused)
-        text_en_fused = text_en_fused + self.ffn_text_en(text_en_fused)
-        text_en_fused = self.norm_text_en_2(text_en_fused)
-        
-        # Text_fr cross-attention
-        text_fr_from_audio = self.text_fr_to_audio(
-            text_fr_features, audio_features, audio_features
-        )
-        text_fr_from_text_en = self.text_fr_to_text_en(
-            text_fr_features, text_en_features, text_en_features, text_en_mask
-        )
-        text_fr_fused = text_fr_features + text_fr_from_audio + text_fr_from_text_en
-        text_fr_fused = self.norm_text_fr_1(text_fr_fused)
-        text_fr_fused = text_fr_fused + self.ffn_text_fr(text_fr_fused)
-        text_fr_fused = self.norm_text_fr_2(text_fr_fused)
-        
-        return audio_fused, text_en_fused, text_fr_fused
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.ModuleList([
+                PreNorm(dim, Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)),
+                PreNorm(dim, FeedForward(dim, mlp_dim, dropout=dropout))
+            ]))
+
+    def forward(self, x, q):
+        for attn, ff in self.layers:
+            x = attn(x, q) + x
+            x = ff(x, q) + x
+        return x
 
 
-if __name__ == "__main__":
-    # Test CCMT layer
-    batch_size = 2
-    audio_len = 50
-    text_en_len = 30
-    text_fr_len = 35
-    hidden_dim = 768
-    
-    ccmt = CCMTLayer(hidden_dim)
-    
-    audio_features = torch.randn(batch_size, audio_len, hidden_dim)
-    text_en_features = torch.randn(batch_size, text_en_len, hidden_dim)
-    text_fr_features = torch.randn(batch_size, text_fr_len, hidden_dim)
-    
-    audio_fused, text_en_fused, text_fr_fused = ccmt(
-        audio_features, text_en_features, text_fr_features
-    )
-    
-    print(f"Audio fused shape: {audio_fused.shape}")
-    print(f"Text EN fused shape: {text_en_fused.shape}")
-    print(f"Text FR fused shape: {text_fr_fused.shape}")
+class CascadedCrossModalTransformer(nn.Module):
+    def __init__(self, num_classes, num_patches, dim, depth, heads, mlp_dim, dim_head=64, dropout=0.20):
+        super().__init__()
+        assert num_patches % 3 == 0, "The number of patched must be equal for all modalities!"
+        self.ppm = num_patches // 3  # Number of patches per modality
+
+        self.pos_embedding_text = nn.Parameter(torch.randn(1, self.ppm, dim))
+        self.pos_embedding_text_en = nn.Parameter(torch.randn(1, self.ppm, dim))
+        self.pos_embedding_audio = nn.Parameter(torch.randn(1, self.ppm, dim))
+
+        self.cross_tr_language = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.cross_tr_speech = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+
+        self.mlp_head = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, num_classes),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        text1_tokens = x[:, :self.ppm] + self.pos_embedding_text
+        text2_tokens = x[:, self.ppm:2*self.ppm] + self.pos_embedding_text_en
+        audio_tokens = x[:, 2*self.ppm:] + self.pos_embedding_audio
+
+        tokens_text_cross = self.cross_tr_language(text1_tokens, text2_tokens)
+        tokens_cross = self.cross_tr_speech(tokens_text_cross, audio_tokens)
+
+        x = tokens_cross[:, 0]
+        return self.mlp_head(x)
+
+
+if __name__ == '__main__':
+    # Usage example
+    model = CascadedCrossModalTransformer(num_classes=3, num_patches=300, dim=1024, depth=6, heads=6, mlp_dim=128)
+    result = model(torch.zeros((10, 300, 1024)))  # batch x tokens x dim_token
+    print(result.shape)

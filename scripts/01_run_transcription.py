@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import sys
 from typing import Dict, Sequence
 import pandas as pd
@@ -23,6 +24,7 @@ DEFAULT_PARTITIONS: Sequence[str] = ("Train", "Development")
 DEFAULT_MAX_FILES: int | None = None
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT_EN_DIR = Path("MSP_Podcast/Transcription_en")
+DEFAULT_OUTPUT_JSON = Path("MSP_Podcast/Transcription_en.json")
 
 
 def load_config(config_path: Path) -> Dict:
@@ -43,12 +45,10 @@ def process_partition(
     partition: str,
     rows: pd.DataFrame,
     audio_dir: Path,
-    output_en_dir: Path,
     transcriber: AudioTranscriber,
 ):
-    output_en_dir.mkdir(parents=True, exist_ok=True)
-
     saved_files = 0
+    transcripts: Dict[str, str] = {}
 
     for file_id in rows["FileName"].tolist():
         audio_path = audio_dir / file_id
@@ -61,20 +61,17 @@ def process_partition(
 
         try:
             key = audio_path.stem
-            transcript_path = output_en_dir / f"{key}.txt"
-            if transcript_path.exists():
-                continue
-
             text_en = transcriber.transcribe(str(audio_path))
         except Exception as exc:  # noqa: BLE001 - log and continue
             print(f"[ERROR] Failed processing {file_id}: {exc}")
             continue
 
-        transcript_path.write_text(text_en, encoding="utf-8")
+        transcripts[key] = text_en
         saved_files += 1
         print(f"[OK] {partition}: {key}")
 
-    print(f"Saved {saved_files} transcripts to {output_en_dir}")
+    print(f"Saved {saved_files} transcripts for {partition}")
+    return transcripts
 
 
 def run_transcribe(
@@ -82,7 +79,7 @@ def run_transcribe(
     partitions: Sequence[str] = DEFAULT_PARTITIONS,
     max_files: int | None = DEFAULT_MAX_FILES,
     seed: int = DEFAULT_SEED,
-    output_en_dir: Path = DEFAULT_OUTPUT_EN_DIR,
+    output_json: Path = DEFAULT_OUTPUT_JSON,
 ):
     set_seed(seed)
 
@@ -99,6 +96,8 @@ def run_transcribe(
     transcriber = AudioTranscriber()
 
 
+    all_transcripts: Dict[str, str] = {}
+
     for partition in partitions:
         try:
             rows = filter_partition_rows(df, partition, max_files)
@@ -106,13 +105,19 @@ def run_transcribe(
             print(f"[WARN] {exc}")
             continue
 
-        process_partition(
+        partition_transcripts = process_partition(
             partition=partition,
             rows=rows,
             audio_dir=audio_dir,
-            output_en_dir=output_en_dir,
             transcriber=transcriber,
         )
+        all_transcripts.update(partition_transcripts)
+
+    if all_transcripts:
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        with output_json.open("w", encoding="utf-8") as f:
+            json.dump(all_transcripts, f, ensure_ascii=False)
+        print(f"Saved {len(all_transcripts)} transcripts to {output_json}")
 
 
 if __name__ == "__main__":

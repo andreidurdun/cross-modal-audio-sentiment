@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import os
 from typing import Literal
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import torch
+import numpy as np
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
 from src.preprocessing.audio_processor import AudioProcessor, AudioProcessorConfig
 
@@ -65,26 +69,29 @@ class MSP_Podcast_Dataset(Dataset):
     def __init__(
         self,
         audio_root,
-        labels_csv,  # Calea catre 'labels_consensus.csv'
-        transcripts_en_dir,  # Director cu fisiere TXT transcriptii engleza (ex: 'MSP_Podcast/Transcription_en')
-        transcripts_es_dir=None,  # Optional: director cu fisiere TXT transcriptii spaniola
-        partition='Train',  # Ex: 'Train', 'Test1', 'Validation', 'Test2'
+        labels_csv,
+        transcripts_en_dir=None,
+        transcripts_es_dir=None,
+        transcripts_en_json=None,
+        transcripts_es_json=None,
+        partition='Train',
         target_sample_rate=16000,
         audio_processor: AudioProcessor | None = None,
         apply_telephony_aug: bool = False,
         modalities: list[Literal['audio', 'text_en', 'text_es']] | None = None,
+        use_cache: bool = True,
+        max_workers: int = 8,
     ):
         super().__init__()
         
         self.audio_root = audio_root
         self.target_sample_rate = target_sample_rate
+        self.partition = partition
         
         # --- Configurare Modalitatile ---
         if modalities is None:
-            # Implicit: incarca tot
             modalities = ['audio', 'text_en']
         
-        # Validare modalitatile
         invalid_modalities = set(modalities) - set(self.SUPPORTED_MODALITIES)
         if invalid_modalities:
             raise ValueError(
@@ -96,25 +103,32 @@ class MSP_Podcast_Dataset(Dataset):
         print(f"Dataset initialized with modalities: {self.modalities}")
         
         # --- Configurare directoare transcripturi ---
+        self.transcripts_cache_en = {}
+        self.transcripts_cache_es = {}
+        
         if 'text_en' in self.modalities:
             self.transcripts_en_dir = transcripts_en_dir
-            if not os.path.isdir(self.transcripts_en_dir):
-                raise ValueError(f"Director invalida: {self.transcripts_en_dir}")
+            self.transcripts_en_json = transcripts_en_json
+            if self.transcripts_en_json is None:
+                if not os.path.isdir(self.transcripts_en_dir):
+                    raise ValueError(f"Director invalida: {self.transcripts_en_dir}")
         else:
             self.transcripts_en_dir = None
+            self.transcripts_en_json = None
         
         if 'text_es' in self.modalities:
-            if transcripts_es_dir is None:
-                raise ValueError(
-                    "transcripts_es_dir este necesar cand 'text_es' este in modalities"
-                )
             self.transcripts_es_dir = transcripts_es_dir
-            if not os.path.isdir(self.transcripts_es_dir):
-                raise ValueError(f"Director invalida: {self.transcripts_es_dir}")
+            self.transcripts_es_json = transcripts_es_json
+            if self.transcripts_es_json is None:
+                if transcripts_es_dir is None:
+                    raise ValueError("transcripts_es_dir este necesar cand 'text_es' este in modalities")
+                if not os.path.isdir(self.transcripts_es_dir):
+                    raise ValueError(f"Director invalida: {self.transcripts_es_dir}")
         else:
             self.transcripts_es_dir = None
+            self.transcripts_es_json = None
         
-        # --- Configurare Audio Processor (doar daca e necesar audio) ---
+        # --- Configurare Audio Processor ---
         if 'audio' in self.modalities:
             processor_config = AudioProcessorConfig(
                 target_sample_rate=target_sample_rate,
@@ -128,97 +142,143 @@ class MSP_Podcast_Dataset(Dataset):
         print(f"Loading metadata from {labels_csv}...")
         df = pd.read_csv(labels_csv)
         
-        # Filtrare după partiție (Coloana 'Split_Set')
-        # Asigură-te că numele partiției corespunde cu cel din CSV (de obicei 'Train', 'Development', 'Test1')
+        # Filtrare după partiție
         self.metadata = df[df['Split_Set'] == partition].reset_index(drop=True)
         
-        # Aplicăm logica de mapare a claselor direct în DataFrame pentru viteză
-        self.metadata['target_label'] = self.metadata.apply(self._map_emotions, axis=1)
+        # Aplicăm logica de mapare a claselor cu vectorizare
+        self.metadata['target_label'] = self._map_emotions_vectorized(self.metadata)
         
-        # Eliminăm rândurile care nu au putut fi mapate (dacă există)
+        # Eliminăm rândurile care nu au putut fi mapate
         self.metadata = self.metadata.dropna(subset=['target_label'])
         
+        # --- OPTIMIZARE: Precompute file IDs și labels ---
+        self.metadata['file_id_key'] = self.metadata['FileName'].str.replace('.wav', '', regex=False)
+        self.metadata['label_id'] = self.metadata['target_label'].map(self.LABEL_MAP)
+        
         print(f"Loaded {len(self.metadata)} files for partition: {partition}")
-
-        # Optimizare: Transformator pentru Resampling (reutilizabil)
-        self.resample_transform = None 
-
-    def _load_json(self, path):
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-
-    def _load_transcript_from_file(self, transcript_dir: str, file_id: str) -> str:
-        """
-        Incarca transcription dintr-un fisier TXT individual.
         
-        Args:
-            transcript_dir: Directorul care contine fisierele TXT
-            file_id: ID-ul fisierului (ex: 'MSP-PODCAST_0001_0028')
-        
-        Returns:
-            Continutul transcription, sau string gol daca nu gaseste fisierul
-        """
-        # Incearca cu si fara extensie .wav
-        txt_path = os.path.join(transcript_dir, f"{file_id}.txt")
-        
-        if not os.path.exists(txt_path):
-            # Incearca fara extensie .txt (in caz ca file_id contine deja extensia)
-            txt_path = os.path.join(transcript_dir, file_id)
-            if not txt_path.endswith('.txt'):
-                txt_path += '.txt'
-        
-        if not os.path.exists(txt_path):
-            return ""  # Fisier nu gasit
-        
-        try:
-            with open(txt_path, 'r', encoding='utf-8') as f:
-                text = f.read().strip()
-            return text
-        except Exception as e:
-            print(f"Error reading transcript {txt_path}: {e}")
-            return ""
-
-    def _map_emotions(self, row):
-        """
-        Logica de conversie: Emoții Originale -> Satisfied/Unsatisfied/Neutral
-        Folosește coloanele 'EmoClass' și 'EmoVal'.
-        """
-        emotion = row['EmoClass']
-        valence = float(row['EmoVal'])
-
-        # --- Regula 1: Categorii Negative Clare -> Unsatisfied ---
-        if emotion in ['Ang', 'Sad', 'Dis', 'Con', 'Fea']:
-            return 'unsatisfied'
-        
-        # --- Regula 2: Categorie Pozitivă Clară -> Satisfied ---
-        elif emotion == 'Hap':
-            return 'satisfied'
-        
-        # --- Regula 3: Neutru -> Neutral ---
-        elif emotion == 'Neu':
-            return 'neutral'
-            
-        # --- Regula 4: Dezambiguizare pentru 'Surprise'/'Other' folosind Valența ---
-        else:
-            if valence <= 3.5:
-                return 'unsatisfied'
-            elif valence >= 4.5:
-                return 'satisfied'
+        # --- 2. OPTIMIZARE: Încărcă transcripturile în memorie în PARALEL ---
+        if 'text_en' in self.modalities:
+            if self.transcripts_en_json is not None:
+                print(f"Loading English transcripts from JSON: {self.transcripts_en_json}")
+                self.transcripts_cache_en = self._load_transcripts_json(self.transcripts_en_json)
             else:
-                return 'neutral'
+                print("Preloading English transcripts (PARALLEL)...")
+                self.transcripts_cache_en = self._load_transcripts_parallel(
+                    self.transcripts_en_dir,
+                    max_workers=max_workers,
+                    use_cache=use_cache,
+                    suffix="_en"
+                )
+        
+        if 'text_es' in self.modalities:
+            if self.transcripts_es_json is not None:
+                print(f"Loading Spanish transcripts from JSON: {self.transcripts_es_json}")
+                self.transcripts_cache_es = self._load_transcripts_json(self.transcripts_es_json)
+            else:
+                print("Preloading Spanish transcripts (PARALLEL)...")
+                self.transcripts_cache_es = self._load_transcripts_parallel(
+                    self.transcripts_es_dir,
+                    max_workers=max_workers,
+                    use_cache=use_cache,
+                    suffix="_es"
+                )
+        
+        print(f"Dataset initialization complete! {len(self.metadata)} samples ready\n")
+
+    def _map_emotions_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        """Vectorized emotion mapping - MULT mai rapid decât apply()"""
+        emotion = df['EmoClass']
+        valence = df['EmoVal'].astype(float)
+        
+        # Condiții vectorizate
+        is_negative = emotion.isin(['Ang', 'Sad', 'Dis', 'Con', 'Fea'])
+        is_happy = emotion == 'Hap'
+        is_neutral = emotion == 'Neu'
+        is_low_valence = valence <= 3.5
+        is_high_valence = valence >= 4.5
+        
+        # Selectare vectorizată
+        result = pd.Series('neutral', index=df.index, dtype=str)
+        result[is_negative] = 'unsatisfied'
+        result[is_happy] = 'satisfied'
+        result[is_neutral] = 'neutral'
+        
+        # Pentru altele, folosim valență
+        mask_other = ~(is_negative | is_happy | is_neutral)
+        result[mask_other & is_low_valence] = 'unsatisfied'
+        result[mask_other & is_high_valence] = 'satisfied'
+        
+        return result
+    
+    def _load_transcripts_parallel(self, transcript_dir: str, max_workers: int = 8, 
+                                    use_cache: bool = True, suffix: str = "") -> dict:
+        """
+        Încarcă toate transcripturile în PARALEL folosind ThreadPool.
+        MULT mai rapid decât citirea secvențială!
+        """
+        cache_file = Path(transcript_dir).parent / f"{Path(transcript_dir).name}_cache{suffix}.json"
+        
+        # Check cache first
+        if use_cache and cache_file.exists():
+            print(f"   Loading from cache: {cache_file}")
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        
+        txt_files = list(Path(transcript_dir).glob("*.txt"))
+        print(f"   Found {len(txt_files)} files - Reading in PARALLEL ({max_workers} workers)...")
+        
+        transcripts = {}
+        
+        def read_single_file(txt_file):
+            """Citește un singur fișier."""
+            file_id = txt_file.stem
+            try:
+                with open(txt_file, 'r', encoding='utf-8') as f:
+                    return file_id, f.read().strip()
+            except Exception as e:
+                return file_id, ""
+        
+        # Citire paralelă cu ThreadPool
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(read_single_file, f): f for f in txt_files}
+            
+            for future in tqdm(as_completed(futures), total=len(txt_files), desc="   Reading"):
+                file_id, text = future.result()
+                transcripts[file_id] = text
+        
+        # Save cache
+        if use_cache:
+            print(f"   Saving cache to {cache_file}")
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(transcripts, f, ensure_ascii=False)
+        
+        print(f"   Cached {len(transcripts)} transcripts")
+        return transcripts 
+
+    def _load_transcripts_json(self, transcript_json: str) -> dict:
+        """Incarca transcripturile dintr-un JSON (key -> text)."""
+        if not os.path.isfile(transcript_json):
+            raise ValueError(f"Fisier JSON invalid: {transcript_json}")
+        with open(transcript_json, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("JSON-ul de transcripturi trebuie sa fie un obiect dict")
+        print(f"   Loaded {len(data)} transcripts from JSON")
+        return data
 
     def __len__(self):
         return len(self.metadata)
 
     def __getitem__(self, idx):
-        # Extragem rândul corespunzător din DataFrame
+        """Get item - OPTIMIZAT cu cache și lazy loading audio"""
         row = self.metadata.iloc[idx]
         file_id = row['FileName']
+        file_id_key = row['file_id_key']  # Precomputed, fără '.wav'
         
-        # Inițializare output dict cu intotdeauna label și file_id
         output = {}
         
-        # --- 1. Procesare Audio (daca e in modalities) ---
+        # --- 1. Audio (Lazy Loading - încarcă doar când cere) ---
         if 'audio' in self.modalities:
             audio_path = os.path.join(self.audio_root, f"{file_id}")
             if not audio_path.endswith('.wav'): 
@@ -227,29 +287,23 @@ class MSP_Podcast_Dataset(Dataset):
             try:
                 waveform = self.audio_processor.load_waveform(audio_path)
             except Exception as e:
-                print(f"Error loading {file_id}: {e}")
-                # Returnăm un tensor gol sau zgomot în caz de eroare pentru a nu opri antrenamentul
-                waveform = torch.zeros(self.target_sample_rate)  # 1 secundă de liniște
+                print(f"EROARE la încărcarea audio {audio_path}: {str(e)}")
+                waveform = torch.zeros(self.target_sample_rate)
             
-            output['audio'] = waveform  # Shape: (Time,)
-
-        # --- 2. Procesare Text (daca e in modalities) ---
-        # Construieste ID-ul fisierului TXT (fara extensie .wav daca exista)
-        key_id = file_id.replace('.wav', '')
+            output['audio'] = waveform
         
+        # --- 2. Text EN (din cache preloaded) ---
         if 'text_en' in self.modalities:
-            text_en = self._load_transcript_from_file(self.transcripts_en_dir, key_id)
+            text_en = self.transcripts_cache_en.get(file_id_key, "")
             output['text_en'] = text_en
         
+        # --- 3. Text ES (din cache preloaded) ---
         if 'text_es' in self.modalities:
-            text_es = self._load_transcript_from_file(self.transcripts_es_dir, key_id)
+            text_es = self.transcripts_cache_es.get(file_id_key, "")
             output['text_es'] = text_es
-
-        # --- 3. Procesare Label ---
-        label_str = row['target_label']
-        label_idx = self.LABEL_MAP[label_str]
         
-        output['label'] = label_idx  # Int: 0, 1, sau 2
+        # --- 4. Label (precomputed) ---
+        output['label'] = int(row['label_id'])
         output['file_id'] = file_id
 
         return output

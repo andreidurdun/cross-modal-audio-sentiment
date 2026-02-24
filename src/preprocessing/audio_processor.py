@@ -6,6 +6,7 @@ from typing import Dict, Optional
 
 import torch
 import torchaudio
+import soundfile as sf
 
 
 @dataclass
@@ -33,7 +34,8 @@ class AudioProcessor:
 
     def load_waveform(self, path: str) -> torch.Tensor:
         """Loads an audio file and returns a mono waveform at the target rate."""
-        waveform, sample_rate = torchaudio.load(path)
+        audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
+        waveform = torch.from_numpy(audio).transpose(0, 1)
 
         if self.config.force_mono and waveform.shape[0] > 1:
             waveform = waveform.mean(dim=0, keepdim=True)

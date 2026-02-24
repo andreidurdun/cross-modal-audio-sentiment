@@ -44,3 +44,9 @@ peft #multi modal lora
 datasets 
 accelerate 
 evaluate 
+-U bitsandbytes>=0.46.1 #QLoRA
+
+torchcodec
+soundfile
+
+einops 

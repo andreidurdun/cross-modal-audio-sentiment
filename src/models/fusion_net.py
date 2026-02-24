@@ -1,103 +1,267 @@
-"""Multi-modal CCMT network that fuses audio and text channels."""
+"""
+Fusion Network - Adaptoare pentru integrarea features multimodale în CCMT.
+Convertirea embeddings din backbones în token patches pentru CCMT.
+"""
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-from transformers import BertTokenizer, CamembertTokenizer
-
-from .backbones import BERTBackbone, CamemBERTBackbone, WavLMBackbone
-from .ccmt_layer import CCMTLayer
-from src.utils.token_sampling import sample_tokens
+from torch import nn
+from typing import Optional, Tuple
 
 
-class CCMTModel(nn.Module):
-    """Complete Cross-modal Cross-attention Transformer model for emotion recognition."""
+class ModalityAdapter(nn.Module):
+    """
+    Adaptor pentru transformarea embeddings într-un număr fix de patch-uri (tokens).
+    Folosește proiecție + reshape pentru a genera reprezentări patch-based.
+    """
 
     def __init__(
         self,
-        audio_backbone: str = "microsoft/wavlm-base-plus",
-        text_en_backbone: str = "bert-base-uncased",
-        text_fr_backbone: str = "camembert-base",
-        num_classes: int = 4,
-        hidden_dim: int = 768,
-        num_attention_heads: int = 8,
+        input_dim: int,
+        output_dim: int = 1024,
+        num_patches: int = 100,
         dropout: float = 0.1,
-        token_sample_k: int = 100,
-        freeze_backbones: bool = False,
-    ) -> None:
+    ):
+        """
+        Args:
+            input_dim: Dimensiunea embedding-ului de intrare (e.g., 768, 256)
+            output_dim: Dimensiunea de ieșire pe token/patch (trebuie să coincidă cu CCMT dim)
+            num_patches: Număr de patch-uri/tokens generate pentru modalitate
+            dropout: Dropout rate pentru training
+        """
         super().__init__()
-        self.token_sample_k = token_sample_k
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.num_patches = num_patches
 
-        self.audio_encoder = WavLMBackbone(audio_backbone, freeze=freeze_backbones)
-        self.text_en_encoder = BERTBackbone(text_en_backbone, freeze=freeze_backbones)
-        self.text_fr_encoder = CamemBERTBackbone(text_fr_backbone, freeze=freeze_backbones)
+        # Proiectăm embedding-ul la numărul necesar de patch-uri × dimensiunea dorită
+        intermediate_dim = num_patches * output_dim
 
-        self.audio_proj = nn.Linear(self.audio_encoder.hidden_size, hidden_dim)
-        self.text_en_proj = nn.Linear(self.text_en_encoder.hidden_size, hidden_dim)
-        self.text_fr_proj = nn.Linear(self.text_fr_encoder.hidden_size, hidden_dim)
-
-        self.ccmt_layer = CCMTLayer(hidden_dim, num_attention_heads, dropout)
-
-        self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 3, hidden_dim),
-            nn.ReLU(),
+        self.projection = nn.Sequential(
+            nn.Linear(input_dim, intermediate_dim),
+            nn.LayerNorm(intermediate_dim),
+            nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
         )
 
-        self.text_en_tokenizer = BertTokenizer.from_pretrained(text_en_backbone)
-        self.text_fr_tokenizer = CamembertTokenizer.from_pretrained(text_fr_backbone)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Embeddings de la backbone de tip (batch_size, input_dim)
+        
+        Returns:
+            Patch tokens de tip (batch_size, num_patches, output_dim)
+        """
+        batch_size = x.size(0)
+        
+        # Proiectăm la spațiul multipatches
+        x = self.projection(x)  # (B, num_patches * output_dim)
+        
+        # Reshape pentru patch structure
+        x = x.view(batch_size, self.num_patches, self.output_dim)  # (B, num_patches, dim)
+        
+        return x
 
-    def forward(self, audio, text_en, text_fr):
-        batch_size = audio.size(0)
 
-        audio_features = self.audio_encoder(audio)
-        audio_features = self.audio_proj(audio_features)
+class AudioAdapter(nn.Module):
+    """
+    Adaptor specializat pentru audio - poate prelucra embeddings secvențiale sau pooled.
+    Suportă reducerea temporală pentru WavLM features.
+    """
 
-        text_en_inputs = self.text_en_tokenizer(
-            text_en,
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-            max_length=512,
-        ).to(audio.device)
-
-        text_en_features = self.text_en_encoder(
-            text_en_inputs['input_ids'],
-            text_en_inputs['attention_mask'],
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int = 1024,
+        num_patches: int = 100,
+        dropout: float = 0.1,
+        use_temporal_pooling: bool = False,
+    ):
+        """
+        Args:
+            input_dim: Dimensiunea features audio (e.g., 768 pentru WavLM)
+            output_dim: Dimensiunea de ieșire per patch
+            num_patches: Număr patch-uri generate
+            dropout: Dropout rate
+            use_temporal_pooling: Dacă True, aplică pooling temporal pe secvențe lungi
+        """
+        super().__init__()
+        self.use_temporal_pooling = use_temporal_pooling
+        self.num_patches = num_patches
+        self.output_dim = output_dim
+        
+        if use_temporal_pooling:
+            # Pentru features secvențiale, aggregăm temporal apoi generăm patches
+            self.temporal_pool = nn.AdaptiveAvgPool1d(1)
+            
+        # Proiect audio la patch space
+        intermediate_dim = num_patches * output_dim
+        self.projection = nn.Sequential(
+            nn.Linear(input_dim, intermediate_dim),
+            nn.LayerNorm(intermediate_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
         )
-        text_en_features = self.text_en_proj(text_en_features)
 
-        text_fr_inputs = self.text_fr_tokenizer(
-            text_fr,
-            padding=True,
-            truncation=True,
-            return_tensors="pt",
-            max_length=512,
-        ).to(audio.device)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Audio features - poate fi:
+               - (batch_size, hidden_dim) - pooled
+               - (batch_size, seq_len, hidden_dim) - secvențial
+        
+        Returns:
+            Audio patch tokens (batch_size, num_patches, output_dim)
+        """
+        # Dacă primim features secvențiale și avem pooling activat
+        if x.dim() == 3 and self.use_temporal_pooling:
+            # (B, seq, dim) → (B, dim, seq)
+            x = x.transpose(1, 2)
+            # Pool temporal → (B, dim, 1)
+            x = self.temporal_pool(x)
+            # Flatten → (B, dim)
+            x = x.squeeze(-1)
+        elif x.dim() == 3:
+            # Dacă nu vrem pooling, facem mean pooling simplu
+            x = x.mean(dim=1)  # (B, dim)
+        
+        batch_size = x.size(0)
+        
+        # Proiectăm la patch space
+        x = self.projection(x)  # (B, num_patches * output_dim)
+        
+        # Reshape la patch structure
+        x = x.view(batch_size, self.num_patches, self.output_dim)
+        
+        return x
 
-        text_fr_features = self.text_fr_encoder(
-            text_fr_inputs['input_ids'],
-            text_fr_inputs['attention_mask'],
+
+class MultimodalFusionAdapter(nn.Module):
+    """
+    Adaptor complet pentru fuziunea multimodală - 3 modalități:
+    - Text EN (RoBERTa-en)
+    - Text ES (RoBERTa-es)  
+    - Audio (WavLM)
+    
+    Convertește toate embeddings la un număr fix de patches pentru CCMT.
+    """
+
+    def __init__(
+        self,
+        text_en_dim: int = 768,
+        text_es_dim: int = 768,
+        audio_dim: int = 768,
+        ccmt_dim: int = 1024,
+        num_patches_per_modality: int = 100,
+        dropout: float = 0.1,
+        use_audio_temporal_pooling: bool = False,
+    ):
+        """
+        Args:
+            text_en_dim: Dimensiune embedding text EN
+            text_es_dim: Dimensiune embedding text ES
+            audio_dim: Dimensiune embedding audio
+            ccmt_dim: Dimensiune token CCMT (trebuie consistentă)
+            num_patches_per_modality: Patch-uri per modalitate (total va fi 3x)
+            dropout: Dropout rate
+            use_audio_temporal_pooling: Pooling temporal pentru audio
+        """
+        super().__init__()
+        
+        self.text_en_adapter = ModalityAdapter(
+            input_dim=text_en_dim,
+            output_dim=ccmt_dim,
+            num_patches=num_patches_per_modality,
+            dropout=dropout,
         )
-        text_fr_features = self.text_fr_proj(text_fr_features)
-
-        audio_sampled = sample_tokens(audio_features, self.token_sample_k)
-        text_en_sampled = sample_tokens(text_en_features, self.token_sample_k)
-        text_fr_sampled = sample_tokens(text_fr_features, self.token_sample_k)
-
-        audio_fused, text_en_fused, text_fr_fused = self.ccmt_layer(
-            audio_sampled,
-            text_en_sampled,
-            text_fr_sampled,
-            text_en_mask=None,
-            text_fr_mask=None,
+        
+        self.text_es_adapter = ModalityAdapter(
+            input_dim=text_es_dim,
+            output_dim=ccmt_dim,
+            num_patches=num_patches_per_modality,
+            dropout=dropout,
         )
+        
+        self.audio_adapter = AudioAdapter(
+            input_dim=audio_dim,
+            output_dim=ccmt_dim,
+            num_patches=num_patches_per_modality,
+            dropout=dropout,
+            use_temporal_pooling=use_audio_temporal_pooling,
+        )
+        
+        self.num_patches_per_modality = num_patches_per_modality
+        self.total_patches = num_patches_per_modality * 3
 
-        audio_pooled = audio_fused.mean(dim=1)
-        text_en_pooled = text_en_fused.mean(dim=1)
-        text_fr_pooled = text_fr_fused.mean(dim=1)
+    def forward(
+        self,
+        text_en_emb: torch.Tensor,
+        text_es_emb: torch.Tensor,
+        audio_emb: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Args:
+            text_en_emb: (batch_size, text_en_dim) 
+            text_es_emb: (batch_size, text_es_dim)
+            audio_emb: (batch_size, audio_dim) sau (batch_size, seq_len, audio_dim)
+        
+        Returns:
+            Multimodal token patches: (batch_size, total_patches, ccmt_dim)
+            Ordinea: [text_es_patches | text_en_patches | audio_patches]
+        """
+        # Generăm patch-uri pentru fiecare modalitate
+        text_en_patches = self.text_en_adapter(text_en_emb)  # (B, num_patches, dim)
+        text_es_patches = self.text_es_adapter(text_es_emb)  # (B, num_patches, dim)
+        audio_patches = self.audio_adapter(audio_emb)        # (B, num_patches, dim)
+        
+        # Concatenăm pe dimensiunea de patch-uri
+        # Ordinea trebuie să corespundă cu ce așteaptă CCMT:
+        # CCMT așteaptă: text1 (es), text2 (en), audio - în funcție de pos_embedding
+        multimodal_tokens = torch.cat(
+            [text_es_patches, text_en_patches, audio_patches],
+            dim=1
+        )  # (B, 3 * num_patches, dim)
+        
+        return multimodal_tokens
 
-        fused = torch.cat([audio_pooled, text_en_pooled, text_fr_pooled], dim=-1)
-        logits = self.classifier(fused)
-        return logits
+    def get_total_patches(self) -> int:
+        """Returnează numărul total de patch-uri/tokens generate."""
+        return self.total_patches
+
+
+if __name__ == '__main__':
+    # Test fusion adapter
+    print("Testing MultimodalFusionAdapter...")
+    
+    batch_size = 16
+    text_en_dim = 768
+    text_es_dim = 768
+    audio_dim = 768
+    ccmt_dim = 1024
+    num_patches = 100
+    
+    adapter = MultimodalFusionAdapter(
+        text_en_dim=text_en_dim,
+        text_es_dim=text_es_dim,
+        audio_dim=audio_dim,
+        ccmt_dim=ccmt_dim,
+        num_patches_per_modality=num_patches,
+    )
+    
+    # Simulăm embeddings
+    text_en_emb = torch.randn(batch_size, text_en_dim)
+    text_es_emb = torch.randn(batch_size, text_es_dim)
+    audio_emb = torch.randn(batch_size, audio_dim)
+    
+    # Forward pass
+    multimodal_tokens = adapter(text_en_emb, text_es_emb, audio_emb)
+    
+    print(f"✓ Input shapes:")
+    print(f"  text_en: {text_en_emb.shape}")
+    print(f"  text_es: {text_es_emb.shape}")
+    print(f"  audio: {audio_emb.shape}")
+    print(f"✓ Output shape: {multimodal_tokens.shape}")
+    print(f"✓ Expected: (batch={batch_size}, patches={num_patches*3}, dim={ccmt_dim})")
+    
+    assert multimodal_tokens.shape == (batch_size, num_patches * 3, ccmt_dim)
+    print("\n✅ All tests passed!")
