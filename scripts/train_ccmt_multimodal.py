@@ -1,6 +1,7 @@
 """
 Script de training pentru modelul CCMT multimodal complet.
 Fine-tuneaza doar fusion adapters + CCMT cu backbones frozen.
+Optimizat pentru viteză maximă cu Mixed Precision (BF16/FP16) și I/O eficient.
 """
 from pathlib import Path
 import sys
@@ -21,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.models import load_full_multimodal_model
 from src.data.dataset import MSP_Podcast_Dataset
+from scripts.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
 
 
 class CCMTTrainer:
@@ -38,6 +40,8 @@ class CCMTTrainer:
         num_epochs: int = 50,
         checkpoint_dir: Path = Path("checkpoints/ccmt_multimodal"),
         early_stopping_patience: int = 7,
+        gradient_accumulation_steps: int = 1,
+        use_amp: bool = True,
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -47,6 +51,11 @@ class CCMTTrainer:
         self.num_epochs = num_epochs
         self.checkpoint_dir = Path(checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        
+        # Mixed Precision Training
+        self.use_amp = use_amp and (device == "cuda")
+        self.scaler: Optional[torch.cuda.amp.GradScaler] = torch.cuda.amp.GradScaler() if self.use_amp else None
         
         # Optimizer - doar parametrii trainable
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
@@ -62,10 +71,9 @@ class CCMTTrainer:
             mode='max',
             factor=0.5,
             patience=3,
-            verbose=True
         )
         
-        # Loss function corectat: CrossEntropyLoss cu ponderi
+        # Loss function: CrossEntropyLoss cu ponderi
         class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(device)
         self.criterion = nn.CrossEntropyLoss(weight=class_weights)
         
@@ -87,10 +95,11 @@ class CCMTTrainer:
         print(f"\n{'='*70}")
         print("CCMT TRAINER INITIALIZED")
         print(f"{'='*70}")
-        # Presupunem ca ai o functie print_parameter_summary, daca nu, o poti comenta
-        if hasattr(self.model, 'print_parameter_summary'):
-            self.model.print_parameter_summary()
         print(f"Optimizer: AdamW (lr={learning_rate}, wd={weight_decay})")
+        print(f"Mixed Precision (AMP): {self.use_amp}")
+        print(f"Gradient Accumulation Steps: {gradient_accumulation_steps}")
+        effective_batch_size = train_loader.batch_size * gradient_accumulation_steps
+        print(f"Effective Batch Size: {effective_batch_size}")
         print(f"Train batches: {len(train_loader)}")
         print(f"Val batches: {len(val_loader)}")
         print(f"Test batches: {len(test_loader)}")
@@ -105,32 +114,55 @@ class CCMTTrainer:
         all_labels = []
         
         progress_bar = tqdm(self.train_loader, desc="Training")
+        self.optimizer.zero_grad(set_to_none=True)
+        
+        # Setăm formatul optim pentru AMP (BFloat16 pt seria RTX 40xx, Float16 altfel)
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         
         for batch_idx, batch in enumerate(progress_bar):
-            # Tensi de forma [batch_size, 100, 768]
-            text_en_emb = batch['text_en_emb'].to(self.device)
-            text_es_emb = batch['text_es_emb'].to(self.device)
-            audio_emb = batch['audio_emb'].to(self.device)
-            labels = batch['labels'].to(self.device)
+            # Mutăm datele pe device și facem cast la FP16/BF16 concomitent (evităm overhead-ul)
+            text_en_emb = batch['text_en_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
+            text_es_emb = batch['text_es_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
+            audio_emb = batch['audio_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
             
-            # Forward pass (Așteptăm logits necruntați prin Sigmoid/Softmax)
-            predictions = self.model(
-                text_en_emb=text_en_emb,
-                text_es_emb=text_es_emb, 
-                audio_emb=audio_emb,
-            )
+            # Etichetele rămân întregi (long) pentru CrossEntropyLoss!
+            labels = batch['labels'].to(self.device, non_blocking=True)
             
-            # Calculăm loss-ul (CrossEntropyLoss acceptă direct indicii claselor)
-            loss = self.criterion(predictions, labels)
+            # Mixed precision context modern
+            with torch.amp.autocast(device_type='cuda', dtype=amp_dtype, enabled=self.use_amp):
+                # Forward pass
+                predictions = self.model(
+                    text_en_emb=text_en_emb,
+                    text_es_emb=text_es_emb, 
+                    audio_emb=audio_emb,
+                )
+                
+                # CrossEntropyLoss știe să gestioneze logits în FP16/BF16, dar e mai sigur cu float32 intern
+                loss = self.criterion(predictions.float(), labels)
+                
+                # Scalează loss-ul pentru gradient accumulation
+                loss = loss / self.gradient_accumulation_steps
             
-            # Backward pass
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
+            # Backward pass (acumulează gradienți)
+            if self.use_amp:
+                self.scaler.scale(loss).backward()  # type: ignore
+            else:
+                loss.backward()
             
-            # Metrics
-            total_loss += loss.item()
+            # Update parametrii doar la fiecare N steps
+            if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
+                if self.use_amp:
+                    self.scaler.unscale_(self.optimizer)  # type: ignore
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.scaler.step(self.optimizer)  # type: ignore
+                    self.scaler.update()  # type: ignore
+                else:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+            
+            # Metrics (folosește loss-ul nescalat pentru logging)
+            total_loss += loss.item() * self.gradient_accumulation_steps
             pred_classes = predictions.argmax(dim=1).cpu().numpy()
             true_classes = labels.cpu().numpy()
             
@@ -140,6 +172,18 @@ class CCMTTrainer:
             # Update progress bar
             avg_loss = total_loss / (batch_idx + 1)
             progress_bar.set_postfix({'loss': f'{avg_loss:.4f}'})
+        
+        # Final step dacă ultimul batch nu a declanșat update-ul
+        if len(self.train_loader) % self.gradient_accumulation_steps != 0:
+            if self.use_amp:
+                self.scaler.unscale_(self.optimizer)  # type: ignore
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.scaler.step(self.optimizer)  # type: ignore
+                self.scaler.update()  # type: ignore
+            else:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
         
         epoch_loss = total_loss / len(self.train_loader)
         epoch_acc = accuracy_score(all_labels, all_preds)
@@ -161,20 +205,24 @@ class CCMTTrainer:
         all_labels = []
         
         progress_bar = tqdm(loader, desc=desc)
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         
         for batch in progress_bar:
-            text_en_emb = batch['text_en_emb'].to(self.device)
-            text_es_emb = batch['text_es_emb'].to(self.device)
-            audio_emb = batch['audio_emb'].to(self.device)
-            labels = batch['labels'].to(self.device)
+            text_en_emb = batch['text_en_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
+            text_es_emb = batch['text_es_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
+            audio_emb = batch['audio_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
+            labels = batch['labels'].to(self.device, non_blocking=True)
             
-            predictions = self.model(
-                text_en_emb=text_en_emb,
-                text_es_emb=text_es_emb,
-                audio_emb=audio_emb,
-            )
+            # Mixed precision pentru inferență
+            with torch.amp.autocast(device_type='cuda', dtype=amp_dtype, enabled=self.use_amp):
+                predictions = self.model(
+                    text_en_emb=text_en_emb,
+                    text_es_emb=text_es_emb,
+                    audio_emb=audio_emb,
+                )
+                
+                loss = self.criterion(predictions.float(), labels)
             
-            loss = self.criterion(predictions, labels)
             total_loss += loss.item()
             
             pred_classes = predictions.argmax(dim=1).cpu().numpy()
@@ -296,64 +344,110 @@ class CCMTTrainer:
 
 def main():
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    BATCH_SIZE = 16
+    # OPTIMIZARE: CCMT consumă extrem de puțină memorie, putem urca Batch Size masiv!
+    BATCH_SIZE = 32
+    GRADIENT_ACCUMULATION_STEPS = 2  # 64 este suficient, nu e nevoie de acumulare adițională aici
     LEARNING_RATE = 1e-4
     NUM_EPOCHS = 50
+    USE_AMP = True  # Mixed Precision Training
+    USE_COMPILE = False  # torch.compile() (PyTorch 2.0+, dezactivat pt compatibilitate Windows)
     
-    print(f"\nDevice: {DEVICE}")
+    # Optimizări CUDA
+    if DEVICE == "cuda":
+        torch.backends.cudnn.benchmark = True  # Auto-tune pentru performanță
+        torch.backends.cuda.matmul.allow_tf32 = True  # TensorFloat-32 pentru matmul
+        torch.backends.cudnn.allow_tf32 = True  # TensorFloat-32 pentru cuDNN
+    
+    print(f"\n{'='*70}")
+    print("TRAINING CONFIGURATION")
+    print(f"{'='*70}")
+    print(f"Device: {DEVICE}")
     print(f"Batch size: {BATCH_SIZE}")
+    print(f"Gradient accumulation steps: {GRADIENT_ACCUMULATION_STEPS}")
+    print(f"Effective batch size: {BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS}")
+    print(f"Mixed Precision (AMP): {USE_AMP}")
+    print(f"torch.compile(): {USE_COMPILE}")
+    if DEVICE == "cuda":
+        print(f"cuDNN benchmark: True")
+        print(f"TF32 enabled: True")
+    print(f"{'='*70}\n")
     
-    print("\nLoading model...")
+    print("Loading model...")
     model = load_full_multimodal_model(
         text_en_checkpoint="checkpoints/roberta_text_en",
         text_es_checkpoint="checkpoints/roberta_text_es",
         audio_checkpoint="checkpoints/wavlm_audio",
         num_classes=3,
-        ccmt_dim=768,               # CORECTAT: Setăm nativ la 768
+        ccmt_dim=768,               # Setăm nativ la 768
         num_patches_per_modality=100,
         ccmt_depth=8,               # Recomandat de lucrare
         ccmt_heads=8,               # Recomandat de lucrare
         ccmt_mlp_dim=2048,
         freeze_backbones=True,
-        projection_dim=None,        # CORECTAT: Fără strat de proiecție
+        projection_dim=None,        # Fără strat de proiecție
         device=DEVICE,
     )
     
-    print("\n⚠ Demo mode: Creating dummy dataloaders")
-    from torch.utils.data import TensorDataset
+    # Compilare model (PyTorch 2.0+) - experimental, lăsat False din setări
+    if USE_COMPILE and hasattr(torch, 'compile'):
+        print("Compiling model with torch.compile()...")
+        model = torch.compile(model, mode='default')
+        print("✓ Model compiled")
     
-    n_train, n_val, n_test = 1000, 200, 200
+    print("\nLoading datasets...")
     
-    def create_dummy_loader(n_samples, batch_size):
-        # CORECTAT: Tensorii trebuie să fie 3D (batch_size, num_patches, embed_dim)
-        text_en_emb = torch.randn(n_samples, 100, 768)
-        text_es_emb = torch.randn(n_samples, 100, 768)
-        audio_emb = torch.randn(n_samples, 100, 768)
-        labels = torch.randint(0, 3, (n_samples,))
-        
-        dataset = TensorDataset(text_en_emb, text_es_emb, audio_emb, labels)
-        
-        class BatchWrapper:
-            def __init__(self, loader):
-                self.loader = loader
-            def __len__(self):
-                return len(self.loader)
-            def __iter__(self):
-                for text_en, text_es, audio, labels in self.loader:
-                    yield {
-                        'text_en_emb': text_en,
-                        'text_es_emb': text_es,
-                        'audio_emb': audio,
-                        'labels': labels,
-                    }
-                    
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        return BatchWrapper(loader)
+    # Încarcă embeddingurile precalculate
+    embeddings_dir = PROJECT_ROOT / "MSP_Podcast" / "embeddings"
     
-    train_loader = create_dummy_loader(n_train, BATCH_SIZE)
-    val_loader = create_dummy_loader(n_val, BATCH_SIZE)
-    test_loader = create_dummy_loader(n_test, BATCH_SIZE)
+    train_dataset = PrecomputedEmbeddingsDataset(
+        embeddings_dir=str(embeddings_dir),
+        partition='train',
+        device='cpu'
+    )
     
+    val_dataset = PrecomputedEmbeddingsDataset(
+        embeddings_dir=str(embeddings_dir),
+        partition='val',
+        device='cpu'
+    )
+    
+    # Pentru test, verificăm dacă există test1 (conform partițiilor MSP-Podcast)
+    test_dataset = PrecomputedEmbeddingsDataset(
+        embeddings_dir=str(embeddings_dir),
+        partition='val',  # Folosim val ca fallback dacă nu există test separat
+        device='cpu'
+    )
+    
+    # Creăm DataLoaders (Am lăsat num_workers=0, standard pentru stabilitate pe Windows la citire din memorie)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=True if DEVICE == "cuda" else False
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True if DEVICE == "cuda" else False
+    )
+    
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True if DEVICE == "cuda" else False
+    )
+    
+    print(f"\n✓ Datasets loaded:")
+    print(f"  Train: {len(train_dataset)} samples, {len(train_loader)} batches")
+    print(f"  Val: {len(val_dataset)} samples, {len(val_loader)} batches")
+    print(f"  Test: {len(test_dataset)} samples, {len(test_loader)} batches")
+
     trainer = CCMTTrainer(
         model=model,
         train_loader=train_loader,
@@ -364,6 +458,8 @@ def main():
         num_epochs=NUM_EPOCHS,
         checkpoint_dir=Path("checkpoints/ccmt_multimodal"),
         early_stopping_patience=7,
+        gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
+        use_amp=USE_AMP,
     )
     
     test_metrics = trainer.train()

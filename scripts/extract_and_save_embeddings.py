@@ -116,22 +116,16 @@ class EmbeddingExtractor:
         print(f"Loading MSP-Podcast {partition} dataset...")
         data_dir = self.dataset_root
         labels_csv = data_dir / "Labels" / "labels_consensus.csv"
-        transcripts_en_dir = data_dir / "Transcription_en"
-        transcripts_es_dir = data_dir / "Transcription_es"
         transcripts_en_json = data_dir / "Transcription_en.json"
         transcripts_es_json = data_dir / "Transcription_es.json"
         audio_root = data_dir / "Audios"
 
         if not labels_csv.exists():
             raise FileNotFoundError(f"Labels file not found: {labels_csv}")
-        if not transcripts_en_dir.exists() and not transcripts_en_json.exists():
-            raise FileNotFoundError(
-                f"Transcripts not found: {transcripts_en_dir} or {transcripts_en_json}"
-            )
-        if not transcripts_es_dir.exists() and not transcripts_es_json.exists():
-            raise FileNotFoundError(
-                f"Transcripts not found: {transcripts_es_dir} or {transcripts_es_json}"
-            )
+        if not transcripts_en_json.exists():
+            raise FileNotFoundError(f"Transcripts JSON not found: {transcripts_en_json}")
+        if not transcripts_es_json.exists():
+            raise FileNotFoundError(f"Transcripts JSON not found: {transcripts_es_json}")
         if not audio_root.exists():
             raise FileNotFoundError(f"Audio directory not found: {audio_root}")
 
@@ -147,10 +141,8 @@ class EmbeddingExtractor:
         dataset = MSP_Podcast_Dataset(
             audio_root=str(audio_root),
             labels_csv=str(labels_csv),
-            transcripts_en_dir=str(transcripts_en_dir),
-            transcripts_es_dir=str(transcripts_es_dir),
-            transcripts_en_json=str(transcripts_en_json) if transcripts_en_json.exists() else None,
-            transcripts_es_json=str(transcripts_es_json) if transcripts_es_json.exists() else None,
+            transcripts_en_json=str(transcripts_en_json),
+            transcripts_es_json=str(transcripts_es_json),
             partition=dataset_partition,
             modalities=["audio", "text_en", "text_es"],
             use_cache=True,

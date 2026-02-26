@@ -19,14 +19,14 @@ class MSP_Podcast_Dataset(Dataset):
     Dataset optimizat pentru MSP-Podcast cu clasele: Satisfied, Unsatisfied, Neutral.
     Suporta incarcare selectiva a modulitatatilor: audio, text engleza, text spaniola.
     
-    Transcriptiile sunt incarcate din fisiere TXT separate în directoarele specificate.
+    Transcriptiile sunt incarcate din fisiere JSON (cheie -> text).
     
     Utilizare:
-        # Doar text engleza din directorul Transcription_en
+        # Doar text engleza din JSON
         dataset = MSP_Podcast_Dataset(
             audio_root='MSP_Podcast/Audios',
             labels_csv='MSP_Podcast/Labels/labels_consensus.csv',
-            transcripts_en_dir='MSP_Podcast/Transcription_en',
+            transcripts_en_json='MSP_Podcast/Transcription_en.json',
             modalities=['text_en']
         )
         
@@ -34,7 +34,7 @@ class MSP_Podcast_Dataset(Dataset):
         dataset = MSP_Podcast_Dataset(
             audio_root='MSP_Podcast/Audios',
             labels_csv='MSP_Podcast/Labels/labels_consensus.csv',
-            transcripts_en_dir='MSP_Podcast/Transcription_en',
+            transcripts_en_json='MSP_Podcast/Transcription_en.json',
             modalities=['audio']
         )
         
@@ -42,7 +42,7 @@ class MSP_Podcast_Dataset(Dataset):
         dataset = MSP_Podcast_Dataset(
             audio_root='MSP_Podcast/Audios',
             labels_csv='MSP_Podcast/Labels/labels_consensus.csv',
-            transcripts_en_dir='MSP_Podcast/Transcription_en',
+            transcripts_en_json='MSP_Podcast/Transcription_en.json',
             modalities=['audio', 'text_en']
         )
         
@@ -50,8 +50,8 @@ class MSP_Podcast_Dataset(Dataset):
         dataset = MSP_Podcast_Dataset(
             audio_root='MSP_Podcast/Audios',
             labels_csv='MSP_Podcast/Labels/labels_consensus.csv',
-            transcripts_en_dir='MSP_Podcast/Transcription_en',
-            transcripts_es_dir='MSP_Podcast/Transcription_es',  # optional
+            transcripts_en_json='MSP_Podcast/Transcription_en.json',
+            transcripts_es_json='MSP_Podcast/Transcription_es.json',  # optional
             modalities=['audio', 'text_en', 'text_es']
         )
     """

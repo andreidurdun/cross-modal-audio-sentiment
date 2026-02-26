@@ -52,9 +52,9 @@ class TextEncoderDataset(Dataset):
         encodings = self.tokenizer(
             texts,
             truncation=True,
-            padding=False,
-            max_length=512,
-            return_tensors=None,
+            padding="max_length",  # Forțează o formă perfect dreptunghiulară pentru GPU
+            max_length=128,        # Aliniat cu specificul de Twitter al modelului
+            return_tensors="pt",   # Garantăm tensori PyTorch
         )
         return encodings
 
@@ -62,7 +62,8 @@ class TextEncoderDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        item = {key: val[idx] for key, val in self.encodings.items()}
+        # adaugă .clone().detach() pentru a preveni warning-uri legate de pointeri în memorie
+        item = {key: val[idx].clone().detach() for key, val in self.encodings.items()} 
         item["labels"] = torch.tensor(self.labels[idx], dtype=torch.long)
         return item
 
@@ -296,14 +297,14 @@ def main():
     # Paths
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
-    transcripts_en_dir = data_dir / "Transcription_en"
+    transcripts_en_json = data_dir / "Transcription_en.json"
     checkpoint_dir = Path("checkpoints/roberta_text_en")
     
     # Verificare fișiere
     if not labels_csv.exists():
         raise FileNotFoundError(f"Labels file not found: {labels_csv}")
-    if not transcripts_en_dir.exists():
-        raise FileNotFoundError(f"Transcripts directory not found: {transcripts_en_dir}")
+    if not transcripts_en_json.exists():
+        raise FileNotFoundError(f"Transcripts JSON not found: {transcripts_en_json}")
     
     print("="*80)
     print("Loading MSP-Podcast English Text Data")
@@ -314,7 +315,7 @@ def main():
     train_dataset_msp = MSP_Podcast_Dataset(
         audio_root=str(data_dir / "Audios"),
         labels_csv=str(labels_csv),
-        transcripts_en_dir=str(transcripts_en_dir),
+        transcripts_en_json=str(transcripts_en_json),
         partition="Train",
         modalities=['text_en'],
         use_cache=True,
@@ -326,7 +327,7 @@ def main():
     val_dataset_msp = MSP_Podcast_Dataset(
         audio_root=str(data_dir / "Audios"),
         labels_csv=str(labels_csv),
-        transcripts_en_dir=str(transcripts_en_dir),
+        transcripts_en_json=str(transcripts_en_json),
         partition="Development",
         modalities=['text_en'],
         use_cache=True,

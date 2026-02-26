@@ -17,7 +17,7 @@ from sklearn.metrics import accuracy_score, f1_score, classification_report, con
 from tqdm import tqdm
 
 # Import optimizat pentru încărcare date
-from src.data.data_loader import get_test_data
+from src.data.dataset import MSP_Podcast_Dataset
 
 
 class ModelEvaluator:
@@ -173,7 +173,7 @@ def main():
     # Paths
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
-    transcripts_dir = data_dir / "Transcription_en"
+    transcripts_en_json = data_dir / "Transcription_en.json"
     finetuned_model_path = Path("checkpoints/roberta_text_en/best_model")
     
     # Model names
@@ -182,8 +182,8 @@ def main():
     # Verificare fișiere
     if not labels_csv.exists():
         raise FileNotFoundError(f"Labels file not found: {labels_csv}")
-    if not transcripts_dir.exists():
-        raise FileNotFoundError(f"Transcripts directory not found: {transcripts_dir}")
+    if not transcripts_en_json.exists():
+        raise FileNotFoundError(f"Transcripts JSON not found: {transcripts_en_json}")
     
     print("="*80)
     print("MODEL EVALUATION AND COMPARISON")
@@ -191,12 +191,17 @@ def main():
     
     # Load test data
     print("\nLoading test data...")
-    test_texts, test_labels = get_test_data(
-        labels_csv=labels_csv,
-        transcripts_dir=transcripts_dir,
-        test_partition="Test1",
-        use_cache=True
+    test_dataset = MSP_Podcast_Dataset(
+        audio_root=str(data_dir / "Audios"),
+        labels_csv=str(labels_csv),
+        transcripts_en_json=str(transcripts_en_json),
+        partition="Test1",
+        modalities=['text_en'],
+        use_cache=True,
+        max_workers=8,
     )
+    test_texts = [test_dataset[idx]['text_en'] for idx in range(len(test_dataset))]
+    test_labels = [test_dataset[idx]['label'] for idx in range(len(test_dataset))]
     
     print(f"\n✅ Test data loaded: {len(test_texts)} samples\n")
     

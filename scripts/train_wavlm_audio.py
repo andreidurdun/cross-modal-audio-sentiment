@@ -1,5 +1,5 @@
 """
-WavLM Fine-tuning cu Standard LoRA (FP16) pentru clasificare audio.
+WavLM Fine-tuning cu Standard LoRA (FP16/BF16) pentru clasificare audio.
 Script optimizat pentru acuratețe maximă și prevenirea OOM pe RTX 4060.
 Model: microsoft/wavlm-base-plus
 """
@@ -51,17 +51,14 @@ class AudioWaveLMDataset(Dataset):
         
         # Verifică și curăță audio-ul de valori invalide
         if np.isnan(audio).any() or np.isinf(audio).any():
-            print(f"Warning: NaN/Inf in audio at idx {idx}. Replacing with silence.")
             audio = np.zeros_like(audio)
 
-        #trunchiere la 6 sec 
+        # Trunchiere la 6 secunde
         MAX_SECONDS = 6 
         max_samples = self.sample_rate * MAX_SECONDS
         
-        # Dacă e mai lung de 6 secunde, îl tăiem!
         if audio.shape[-1] > max_samples:
             audio = audio[..., :max_samples]
-
         
         inputs = self.feature_extractor(
             audio,
@@ -82,7 +79,7 @@ class AudioCollator:
         batch_size = len(input_features)
         max_length = max(feature.shape[-1] for feature in input_features)
         
-        # Generăm tensori pentru input și mască de atenție
+        # Generăm tensori pentru input și mască de atenție (padding dinamic pe batch)
         padded_inputs = torch.zeros((batch_size, max_length), dtype=torch.float32)
         attention_mask = torch.zeros((batch_size, max_length), dtype=torch.long)
         
@@ -126,7 +123,8 @@ class AudioTrainerWavLM:
             lora_alpha=lora_alpha,
             lora_dropout=0.1,
             bias="none",
-            target_modules=["q_proj", "v_proj", "k_proj"], 
+            # CORECRURA 1: "all-linear" atacă toate straturile dense, maximizând capacitatea de adaptare
+            target_modules="all-linear", 
             modules_to_save=["classifier", "projector"], 
         )
 
@@ -140,106 +138,87 @@ class AudioTrainerWavLM:
         total_loss = 0.0
         valid_steps = 0
         consecutive_nans = 0
-        MAX_CONSECUTIVE_NANS = 100  # Abort dacă > 100 NaN-uri consecutive
+        MAX_CONSECUTIVE_NANS = 100 
 
-        # Ponderile pentru clase (Ajustează-le dacă distribuția e ușor diferită pe Audio vs Text)
+        # Ponderile pentru clase - vitale pentru MSP-Podcast
         class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(self.device)
         loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
         progress_bar = tqdm(train_loader, desc="Training", position=0)
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
         for step, batch in enumerate(progress_bar):
-            input_values = batch['input_values'].to(self.device)
-            attention_mask = batch['attention_mask'].to(self.device)
-            labels = batch['labels'].to(self.device)
+            input_values = batch['input_values'].to(self.device, non_blocking=True)
+            attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+            labels = batch['labels'].to(self.device, non_blocking=True)
             
-            # Verifică input pentru NaN/Inf
             if torch.isnan(input_values).any() or torch.isinf(input_values).any():
-                print(f"⚠️ Warning: NaN/Inf in input at step {step}. Skipping batch.")
                 consecutive_nans += 1
                 if consecutive_nans > MAX_CONSECUTIVE_NANS:
-                    print(f"\n❌ ABORT: Too many consecutive NaN batches ({consecutive_nans}). Training unstable.")
+                    print(f"\n❌ ABORT: Too many consecutive NaN batches ({consecutive_nans}).")
                     return float('nan')
                 continue
             else:
-                consecutive_nans = 0  # Reset counter on good batch
+                consecutive_nans = 0 
             
-            # RTX 4060 suportă BF16, care elimină erorile NaN!
             autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type='cuda') if use_amp else nullcontext()
 
             with autocast_ctx:
-                # 1. Rulăm modelul FĂRĂ labels (nu avem nevoie de loss-ul intern HF)
+                # 1. Rulăm modelul FĂRĂ labels pentru a extrage logiții puri
                 outputs = model(
                     input_values=input_values, 
                     attention_mask=attention_mask
                 )
                 
-                # 2. Cast la FP32 pentru loss stabil
-                logits = outputs.logits.float()
+                # 2. Asigurăm forma corectă [batch_size, num_classes] și cast la FP32 pentru stabilitate
+                logits = outputs.logits.float().view(-1, self.num_labels)
+                labels_flat = labels.view(-1)
+                
+                # 3. Calculăm loss-ul ponderat manual
+                loss = loss_fn(logits, labels_flat)
             
-            # Verifică logits pentru NaN/Inf
-            if torch.isnan(logits).any() or torch.isinf(logits).any():
-                print(f"⚠️ Warning: NaN/Inf in logits at step {step}. Skipping batch.")
-                consecutive_nans += 1
-                if consecutive_nans > MAX_CONSECUTIVE_NANS:
-                    print(f"\n❌ ABORT: Too many consecutive NaN batches ({consecutive_nans}). Training collapsed.")
-                    return float('nan')
-                continue
-            else:
-                consecutive_nans = 0
-            
-            # 3. Calculăm loss-ul ponderat corect
-            loss = loss_fn(logits, labels)
-            
-            # Verifică loss pentru NaN/Inf
             if torch.isnan(loss) or torch.isinf(loss):
-                print(f"⚠️ Warning: NaN/Inf loss at step {step} (loss={loss.item()}). Skipping batch.")
                 consecutive_nans += 1
                 if consecutive_nans > MAX_CONSECUTIVE_NANS:
-                    print(f"\n❌ ABORT: Too many consecutive NaN batches ({consecutive_nans}). Training collapsed.")
                     return float('nan')
                 continue
             else:
                 consecutive_nans = 0
             
             loss = loss / gradient_accumulation_steps
+            
             if use_amp:
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
             
             if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(train_loader):
-                # Verifică gradienți pentru NaN/Inf
                 has_nan_grad = False
                 for name, param in model.named_parameters():
                     if param.grad is not None:
                         if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                            print(f"⚠️ Warning: NaN/Inf gradient in {name} at step {step}")
                             has_nan_grad = True
                             break
                 
                 if has_nan_grad:
-                    optimizer.zero_grad()
+                    optimizer.zero_grad(set_to_none=True)
                     consecutive_nans += 1
-                    if consecutive_nans > MAX_CONSECUTIVE_NANS:
-                        print(f"\n❌ ABORT: Too many consecutive NaN batches ({consecutive_nans}). Training collapsed.")
-                        return float('nan')
                     continue
                 
-                # Gradient clipping mai agresiv pentru stabilitate
                 if use_amp:
                     scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                
                 if use_amp:
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     optimizer.step()
+                
                 scheduler.step()
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
 
             actual_loss = loss.item() * gradient_accumulation_steps
             total_loss += actual_loss
@@ -247,8 +226,6 @@ class AudioTrainerWavLM:
             progress_bar.set_postfix({"loss": f"{actual_loss:.4f}"})
 
         avg_loss = total_loss / valid_steps if valid_steps > 0 else float('nan')
-        if valid_steps < len(train_loader):
-            print(f"\n⚠️ Warning: Skipped {len(train_loader) - valid_steps} batches due to NaN/Inf")
         return avg_loss
 
     @torch.no_grad()
@@ -258,39 +235,42 @@ class AudioTrainerWavLM:
         all_predictions = []
         all_labels = []
 
-        # Definim o funcție standard de loss pentru validare
-        val_loss_fn = torch.nn.CrossEntropyLoss()
+        # Păstrăm ponderile și la validare pentru a avea un Loss comparabil
+        class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(self.device)
+        val_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
         progress_bar = tqdm(val_loader, desc="Evaluating", position=0, leave=False)
-
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
 
         for batch in progress_bar:
-            input_values = batch['input_values'].to(self.device)
-            attention_mask = batch['attention_mask'].to(self.device)
-            labels = batch['labels'].to(self.device)
+            input_values = batch['input_values'].to(self.device, non_blocking=True)
+            attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+            labels = batch['labels'].to(self.device, non_blocking=True)
 
             autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type='cuda') if use_amp else nullcontext()
             with autocast_ctx:
-                # 1. Rulăm modelul fără labels
                 outputs = model(
                     input_values=input_values, 
                     attention_mask=attention_mask
                 )
                 
-                # 2. Calculăm loss-ul
-                loss = val_loss_fn(outputs.logits.float(), labels)
+                # Același procedeu de siguranță pentru forma tensorilor
+                logits = outputs.logits.float().view(-1, self.num_labels)
+                labels_flat = labels.view(-1)
+                
+                loss = val_loss_fn(logits, labels_flat)
+                
             total_loss += loss.item()
 
-            predictions = outputs.logits.argmax(dim=-1)
+            predictions = logits.argmax(dim=-1)
             all_predictions.extend(predictions.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            all_labels.extend(labels_flat.cpu().numpy())
 
         avg_loss = total_loss / len(val_loader)
         accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
         f1_macro = f1_score(all_labels, all_predictions, average='macro', zero_division=0)
         return avg_loss, accuracy, f1_macro
-
+    
     def train(
         self,
         train_dataset,
@@ -299,16 +279,15 @@ class AudioTrainerWavLM:
         checkpoint_dir,
         num_epochs=5,
         batch_size=8,
-        learning_rate=1e-3,
+        learning_rate=3e-4,
         lora_r=16,
         lora_alpha=32,
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=8,
         use_amp=True,
-        use_compile=True,
         num_workers=4,
     ):
         print("="*80)
-        print("Audio Training with AMP + Compile - WavLM")
+        print("Audio Training with AMP - WavLM")
         print("="*80)
 
         model = self.setup_model_with_lora(lora_r=lora_r, lora_alpha=lora_alpha)
@@ -319,48 +298,38 @@ class AudioTrainerWavLM:
         else:
             use_amp = False
 
-        if use_compile and hasattr(torch, "compile"):
-            try:
-                model = torch.compile(model, mode="max-autotune")
-                print("torch.compile enabled")
-            except Exception as e:
-                print(f"torch.compile disabled: {e}")
-
         collator = AudioCollator()
+        
+        # Num_workers a fost lăsat la 0 pentru a preveni crash-uri pe Windows la procesare audio masivă
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
             collate_fn=collator,
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=num_workers > 0,
+            num_workers=0,
+            pin_memory=True if self.device == "cuda" else False,
         )
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size * 2,
             shuffle=False,
             collate_fn=collator,
-            num_workers=num_workers,
-            pin_memory=True,
-            persistent_workers=num_workers > 0,
+            num_workers=0,
+            pin_memory=True if self.device == "cuda" else False,
         )
         
-        # Prevenim eroarea dacă test_dataset este None
         if test_dataset is not None:
             test_loader = DataLoader(
                 test_dataset,
                 batch_size=batch_size * 2,
                 shuffle=False,
                 collate_fn=collator,
-                num_workers=num_workers,
-                pin_memory=True,
-                persistent_workers=num_workers > 0,
+                num_workers=0,
+                pin_memory=True if self.device == "cuda" else False,
             )
         else:
             test_loader = None
 
-        # Adunăm doar parametrii care se pot antrena (LoRA + Classifier)
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
         scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
@@ -392,7 +361,7 @@ class AudioTrainerWavLM:
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
                 best_model_path = checkpoint_dir / "best_model"
-                print(f"New best model! F1 Macro: {val_f1:.4f} - Saving...")
+                print(f"✅ New best model! F1 Macro: {val_f1:.4f} - Saving...")
                 
                 model.save_pretrained(best_model_path)
                 self.feature_extractor.save_pretrained(best_model_path)
@@ -405,7 +374,6 @@ class AudioTrainerWavLM:
         else:
             print("\nNo test dataset provided. Skipping test evaluation.")
             return {'best_val_f1': best_val_f1}
-
 
 def main():
     data_dir = Path("MSP_Podcast")
@@ -424,7 +392,8 @@ def main():
         audio_root=str(data_dir / "Audios"),
         labels_csv=str(labels_csv),
         partition="Train",
-        modalities=['audio']
+        modalities=['audio'],
+        use_cache=True,
     )
 
     print("\n2. Loading Validation dataset...")
@@ -432,10 +401,11 @@ def main():
         audio_root=str(data_dir / "Audios"),
         labels_csv=str(labels_csv),
         partition="Development",
-        modalities=['audio']
+        modalities=['audio'],
+        use_cache=True,
     )
 
-    print(f"\n✅ Data loaded successfully!")
+    print(f"\nData loaded successfully!")
     print(f"   Train: {len(train_dataset_msp)} samples")
     print(f"   Val: {len(val_dataset_msp)} samples")
 
@@ -446,20 +416,19 @@ def main():
     
     trainer = AudioTrainerWavLM()
     
+    # CORECRURA 2: LR 3e-4 si Batch Size sigur pentru VRAM
     results = trainer.train(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         test_dataset=None,
         checkpoint_dir=checkpoint_dir,
         num_epochs=5,
-        batch_size=16,
-        gradient_accumulation_steps=4, 
-        learning_rate=1e-5,
+        batch_size=16,                  # Mai mic, previne aglomerarea RAM-ului
+        gradient_accumulation_steps=4, # 8x8 = 64 Effective Batch Size
+        learning_rate=3e-4,            # Optim pentru LoRA
         lora_r=16,
         lora_alpha=32,
         use_amp=True,
-        use_compile=False,
-        num_workers=0,
     )
 
     results_path = checkpoint_dir / "best_model" / "training_results.json"
@@ -467,7 +436,7 @@ def main():
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
 
-    print(f"\n✅ Results saved to: {results_path}")
+    print(f"\nResults saved to: {results_path}")
     print("\n" + "="*80)
     print("Training Complete!")
     print("="*80)

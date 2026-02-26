@@ -1,0 +1,363 @@
+"""
+Script de testare pentru modelul RoBERTa Text EN.
+Evaluează pe datele de validare și salvează scorurile și graficele.
+"""
+from pathlib import Path
+from typing import Optional
+import json
+from datetime import datetime
+
+import torch
+import sys
+import numpy as np
+from sklearn.metrics import (
+    f1_score, accuracy_score, precision_score, recall_score,
+    confusion_matrix, classification_report
+)
+import matplotlib.pyplot as plt
+import seaborn as sns
+from tqdm import tqdm
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoTokenizer, DataCollatorWithPadding
+from peft import AutoPeftModelForSequenceClassification
+
+from src.data.dataset import MSP_Podcast_Dataset
+
+
+class TextEncoderDataset(Dataset):
+    """Dataset wrapper pentru tokenizare text."""
+
+    def __init__(self, msp_dataset: MSP_Podcast_Dataset, tokenizer):
+        self.msp_dataset = msp_dataset
+        self.tokenizer = tokenizer
+        self.encodings = self._precompute_encodings()
+        self.labels = [int(row['label_id']) for _, row in msp_dataset.metadata.iterrows()]
+
+    def _precompute_encodings(self):
+        """Pre-tokenizează toate textele."""
+        texts = []
+        for idx in range(len(self.msp_dataset)):
+            sample = self.msp_dataset[idx]
+            text = sample.get('text_en', sample.get('text_es', ''))
+            if not text or text.strip() == "":
+                text = "[EMPTY]"
+            texts.append(text.strip())
+        
+        encodings = self.tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=512,
+            return_tensors="pt"
+        )
+        return self._sanitize_input_ids(encodings)
+
+    def _sanitize_input_ids(self, encodings):
+        """Ensure input_ids stay within tokenizer vocab range."""
+        input_ids = encodings["input_ids"]
+        vocab_size = int(self.tokenizer.vocab_size)
+        bad_mask = (input_ids < 0) | (input_ids >= vocab_size)
+        if bad_mask.any():
+            bad_count = int(bad_mask.sum().item())
+            unk_id = self.tokenizer.unk_token_id
+            if unk_id is None:
+                unk_id = 0
+            input_ids = input_ids.clone()
+            input_ids[bad_mask] = int(unk_id)
+            encodings["input_ids"] = input_ids
+            print(f"Warning: fixed {bad_count} out-of-range token ids (vocab_size={vocab_size}).")
+        return encodings
+
+    def _sanitize_input_ids(self, encodings):
+        """Ensure input_ids stay within tokenizer vocab range."""
+        input_ids = encodings["input_ids"]
+        vocab_size = int(self.tokenizer.vocab_size)
+        bad_mask = (input_ids < 0) | (input_ids >= vocab_size)
+        if bad_mask.any():
+            bad_count = int(bad_mask.sum().item())
+            unk_id = self.tokenizer.unk_token_id
+            if unk_id is None:
+                unk_id = 0
+            input_ids = input_ids.clone()
+            input_ids[bad_mask] = int(unk_id)
+            encodings["input_ids"] = input_ids
+            print(f"Warning: fixed {bad_count} out-of-range token ids (vocab_size={vocab_size}).")
+        return encodings
+
+    def __len__(self):
+        return len(self.msp_dataset)
+
+    def __getitem__(self, idx):
+        return {
+            "input_ids": self.encodings["input_ids"][idx],
+            "attention_mask": self.encodings["attention_mask"][idx],
+            "labels": torch.tensor(self.labels[idx], dtype=torch.long),
+        }
+
+
+class TextEnTester:
+    """Tester pentru modelul RoBERTa Text EN."""
+
+    def __init__(self, model_name: str = "roberta-base", device: Optional[str] = None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_name = model_name
+        self.num_labels = 3
+        self.id2label = {0: "unsatisfied", 1: "neutral", 2: "satisfied"}
+        self.label2id = {v: k for k, v in self.id2label.items()}
+        print(f"Using device: {self.device}")
+
+    @torch.no_grad()
+    def evaluate(self, model, val_loader: DataLoader) -> dict:
+        """Evaluează modelul și calculează metrici."""
+        model.eval()
+        all_predictions = []
+        all_labels = []
+        total_loss = 0.0
+
+        progress_bar = tqdm(val_loader, desc="Evaluating")
+        for batch in progress_bar:
+            input_ids = batch["input_ids"].to(self.device)
+            attention_mask = batch["attention_mask"].to(self.device)
+            labels = batch["labels"].to(self.device)
+
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+            )
+
+            total_loss += outputs.loss.item()
+            predictions = outputs.logits.argmax(dim=-1)
+            all_predictions.extend(predictions.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+
+        all_predictions = np.array(all_predictions)
+        all_labels = np.array(all_labels)
+
+        # Calcul metrici
+        accuracy = accuracy_score(all_labels, all_predictions)
+        f1_macro = f1_score(all_labels, all_predictions, average='macro', zero_division=0)
+        f1_weighted = f1_score(all_labels, all_predictions, average='weighted', zero_division=0)
+        precision_macro = precision_score(all_labels, all_predictions, average='macro', zero_division=0)
+        recall_macro = recall_score(all_labels, all_predictions, average='macro', zero_division=0)
+        
+        # F1 per clase
+        f1_per_class = {}
+        for label_id, label_name in self.id2label.items():
+            f1_per_class[label_name] = f1_score(
+                all_labels, all_predictions,
+                labels=[label_id],
+                average='micro',
+                zero_division=0
+            )
+
+        cm = confusion_matrix(all_labels, all_predictions)
+        
+        return {
+            "accuracy": float(accuracy),
+            "f1_macro": float(f1_macro),
+            "f1_weighted": float(f1_weighted),
+            "precision_macro": float(precision_macro),
+            "recall_macro": float(recall_macro),
+            "f1_per_class": {k: float(v) for k, v in f1_per_class.items()},
+            "confusion_matrix": cm.tolist(),
+            "avg_loss": float(total_loss / len(val_loader)),
+            "num_samples": len(all_labels),
+            "predictions": all_predictions.tolist(),
+            "labels": all_labels.tolist(),
+        }
+
+    def plot_confusion_matrix(self, cm, output_path):
+        """Plotează confusion matrix."""
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                   xticklabels=list(self.id2label.values()),
+                   yticklabels=list(self.id2label.values()))
+        plt.title('Confusion Matrix - RoBERTa Text EN')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ Confusion matrix saved: {output_path}")
+
+    def plot_metrics(self, results, output_path):
+        """Plotează metricile principale."""
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+        
+        # F1 per clase
+        f1_per_class = results['f1_per_class']
+        axes[0, 0].bar(f1_per_class.keys(), f1_per_class.values(), color='steelblue')
+        axes[0, 0].set_title('F1 Score per Class')
+        axes[0, 0].set_ylabel('F1 Score')
+        axes[0, 0].set_ylim([0, 1])
+        for i, v in enumerate(f1_per_class.values()):
+            axes[0, 0].text(i, v + 0.02, f'{v:.3f}', ha='center')
+        
+        # Accuracy vs F1
+        metrics_names = ['Accuracy', 'F1 Macro', 'F1 Weighted', 'Precision', 'Recall']
+        metrics_values = [
+            results['accuracy'],
+            results['f1_macro'],
+            results['f1_weighted'],
+            results['precision_macro'],
+            results['recall_macro']
+        ]
+        axes[0, 1].bar(metrics_names, metrics_values, color='coral')
+        axes[0, 1].set_title('Overall Metrics')
+        axes[0, 1].set_ylabel('Score')
+        axes[0, 1].set_ylim([0, 1])
+        axes[0, 1].tick_params(axis='x', rotation=45)
+        for i, v in enumerate(metrics_values):
+            axes[0, 1].text(i, v + 0.02, f'{v:.3f}', ha='center', fontsize=9)
+        
+        # Normalizată confusion matrix
+        cm_normalized = results['confusion_matrix'] / np.array(results['confusion_matrix']).sum(axis=1, keepdims=True)
+        sns.heatmap(cm_normalized, annot=True, fmt='.2%', cmap='RdYlGn',
+                   ax=axes[1, 0],
+                   xticklabels=list(self.id2label.values()),
+                   yticklabels=list(self.id2label.values()))
+        axes[1, 0].set_title('Normalized Confusion Matrix')
+        axes[1, 0].set_ylabel('True Label')
+        axes[1, 0].set_xlabel('Predicted Label')
+        
+        # Loss și sample count
+        info_text = f"Validation Loss: {results['avg_loss']:.4f}\n"
+        info_text += f"Number of Samples: {results['num_samples']}\n"
+        info_text += f"Accuracy: {results['accuracy']:.4f}\n"
+        info_text += f"F1 Macro: {results['f1_macro']:.4f}"
+        axes[1, 1].text(0.5, 0.5, info_text, ha='center', va='center',
+                       fontsize=11, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        axes[1, 1].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ Metrics plot saved: {output_path}")
+
+    def test(
+        self,
+        val_dataset,
+        checkpoint_dir: Path,
+        batch_size: int = 32,
+        output_dir: Path = Path("results/roberta_text_en"),
+    ):
+        """Testează modelul și salvează rezultatele."""
+        print("="*80)
+        print("Testing RoBERTa Text EN Model")
+        print("="*80)
+
+        # Creează directoare output
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Încarc modelul
+        checkpoint_dir = Path(checkpoint_dir)
+        best_model_path = checkpoint_dir / "best_model"
+        if not best_model_path.exists():
+            raise FileNotFoundError(f"Model not found at: {best_model_path}")
+        
+        print(f"\nLoading model from: {best_model_path}")
+        tokenizer = AutoTokenizer.from_pretrained(best_model_path)
+        model = AutoPeftModelForSequenceClassification.from_pretrained(best_model_path)
+        model = model.to(self.device)
+        
+        # DataLoader
+        data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size * 2,
+            shuffle=False,
+            collate_fn=data_collator,
+        )
+        
+        print(f"\nEvaluating on {len(val_dataset)} validation samples...")
+        results = self.evaluate(model, val_loader)
+        
+        # Salvează rezultatele
+        results_json_path = output_dir / "test_results.json"
+        with open(results_json_path, 'w') as f:
+            # Salvează doar rezultatele fără predictions pentru a economisi spațiu
+            results_to_save = {k: v for k, v in results.items() if k not in ['predictions', 'labels']}
+            json.dump(results_to_save, f, indent=2)
+        print(f"✅ Results saved: {results_json_path}")
+        
+        # Crează grafice
+        cm = np.array(results['confusion_matrix'])
+        self.plot_confusion_matrix(cm, output_dir / "confusion_matrix.png")
+        self.plot_metrics(results, output_dir / "metrics.png")
+        
+        # Afișează rezultatele
+        print("\n" + "="*80)
+        print("VALIDATION RESULTS")
+        print("="*80)
+        print(f"Accuracy: {results['accuracy']:.4f}")
+        print(f"F1 Macro: {results['f1_macro']:.4f}")
+        print(f"F1 Weighted: {results['f1_weighted']:.4f}")
+        print(f"Precision Macro: {results['precision_macro']:.4f}")
+        print(f"Recall Macro: {results['recall_macro']:.4f}")
+        print(f"Avg Loss: {results['avg_loss']:.4f}")
+        print(f"\nF1 per Class:")
+        for label_name, f1 in results['f1_per_class'].items():
+            print(f"  {label_name}: {f1:.4f}")
+        print("="*80)
+
+
+def main():
+    """Main testing function."""
+    
+    # Paths
+    data_dir = Path("MSP_Podcast")
+    labels_csv = data_dir / "Labels" / "labels_consensus.csv"
+    transcripts_en_json = data_dir / "Transcription_en.json"
+    checkpoint_dir = Path("checkpoints/roberta_text_en")
+    output_dir = Path("results/roberta_text_en")
+    
+    # Verificare fișiere
+    if not labels_csv.exists():
+        raise FileNotFoundError(f"Labels file not found: {labels_csv}")
+    if not transcripts_en_json.exists():
+        raise FileNotFoundError(f"Transcripts JSON not found: {transcripts_en_json}")
+    
+    print("="*80)
+    print("Loading MSP-Podcast English Text Data")
+    print("="*80)
+    
+    # Load validation dataset
+    print("\nLoading Validation dataset...")
+    val_dataset_msp = MSP_Podcast_Dataset(
+        audio_root=str(data_dir / "Audios"),
+        labels_csv=str(labels_csv),
+        transcripts_en_json=str(transcripts_en_json),
+        partition="Development",
+        modalities=['text_en'],
+        use_cache=True,
+        max_workers=8
+    )
+    
+    print(f"✅ Data loaded successfully!")
+    print(f"   Val: {len(val_dataset_msp)} samples\n")
+    
+    # Create tester and wrap dataset
+    tester = TextEnTester()
+    best_model_path = checkpoint_dir / "best_model"
+    if not best_model_path.exists():
+        raise FileNotFoundError(f"Model not found at: {best_model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(best_model_path)
+    val_dataset = TextEncoderDataset(val_dataset_msp, tokenizer)
+    
+    # Testing
+    tester.test(
+        val_dataset=val_dataset,
+        checkpoint_dir=checkpoint_dir,
+        batch_size=32,
+        output_dir=output_dir,
+    )
+
+
+if __name__ == "__main__":
+    main()
