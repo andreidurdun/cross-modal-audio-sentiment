@@ -1,4 +1,3 @@
-"""Audio preprocessing utilities: resampling, mono conversion, augmentations."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,8 +16,7 @@ class AudioProcessorConfig:
 
 
 class AudioProcessor:
-    """Loads waveforms from disk and applies standard preprocessing steps."""
-
+    '''Incarca fisierele audio si le preproceseaza conform configuratiei'''
     def __init__(self, config: Optional[AudioProcessorConfig] = None) -> None:
         self.config = config or AudioProcessorConfig()
         self._resamplers: Dict[int, torchaudio.transforms.Resample] = {}
@@ -33,7 +31,6 @@ class AudioProcessor:
         )
 
     def load_waveform(self, path: str) -> torch.Tensor:
-        """Loads an audio file and returns a mono waveform at the target rate."""
         audio, sample_rate = sf.read(path, dtype="float32", always_2d=True)
         waveform = torch.from_numpy(audio).transpose(0, 1)
 
@@ -48,7 +45,6 @@ class AudioProcessor:
         return waveform.squeeze(0)
 
     def telephony_augmentation(self, waveform: torch.Tensor) -> torch.Tensor:
-        """Simulates a narrow-band telephone channel."""
         degraded = self._downsampler(waveform)
         restored = self._upsampler(degraded)
         return restored

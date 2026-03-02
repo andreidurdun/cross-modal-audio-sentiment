@@ -7,6 +7,7 @@ import numpy as np
 from sklearn.metrics import f1_score
 import warnings
 
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -24,7 +25,7 @@ from transformers import (
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 from tqdm import tqdm
 
-# Import dataset optimizat
+
 from src.data.dataset import MSP_Podcast_Dataset
 
 
@@ -34,16 +35,16 @@ class TextEncoderDataset(Dataset):
     def __init__(self, msp_dataset: MSP_Podcast_Dataset, tokenizer):
         self.msp_dataset = msp_dataset
         self.tokenizer = tokenizer
-        # Pre-tokenize everything at init
+        #pretokenizeaza toate textele la init
         self.encodings = self._precompute_encodings()
         self.labels = [int(row['label_id']) for _, row in msp_dataset.metadata.iterrows()]
 
     def _precompute_encodings(self):
-        """Pre-tokenizează toate textele la init (o singură dată)."""
+        """pretokenizeaza toate textele la init"""
         texts = []
         for idx in range(len(self.msp_dataset)):
             sample = self.msp_dataset[idx]
-            text = sample.get('text_en', sample.get('text_es', ''))
+            text = sample.get('text_en', '')
             if not text or text.strip() == "":
                 text = "[EMPTY]"
             texts.append(text.strip())
@@ -52,9 +53,9 @@ class TextEncoderDataset(Dataset):
         encodings = self.tokenizer(
             texts,
             truncation=True,
-            padding="max_length",  # Forțează o formă perfect dreptunghiulară pentru GPU
-            max_length=128,        # Aliniat cu specificul de Twitter al modelului
-            return_tensors="pt",   # Garantăm tensori PyTorch
+            padding="max_length",  
+            max_length=128,       
+            return_tensors="pt", #return tensori pytorch
         )
         return encodings
 
@@ -62,14 +63,14 @@ class TextEncoderDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        # adaugă .clone().detach() pentru a preveni warning-uri legate de pointeri în memorie
+        #.clone() - creeaza o copie a tensorului pentru a evita modificarea datelor originale
+        #.detach() - opreste calc gradientilor pentru acest tensor
         item = {key: val[idx].clone().detach() for key, val in self.encodings.items()} 
         item["labels"] = torch.tensor(self.labels[idx], dtype=torch.long)
         return item
 
 
 class TextOnlyTrainer:
-    """Trainer pentru antrenament text-only cu LoRA."""
 
     def __init__(
         self,
@@ -81,24 +82,26 @@ class TextOnlyTrainer:
         self.model_name = model_name
         self.num_labels = num_labels
 
-        # Label mapping
+        #label mapping
         self.id2label = {0: "unsatisfied", 1: "neutral", 2: "satisfied"}
         self.label2id = {v: k for k, v in self.id2label.items()}
 
-        # Tokenizer
+        #tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     def setup_model_with_lora(self, lora_r: int = 16, lora_alpha: int = 32):
-        """Configurează modelul cu QLoRA (8-bit + LoRA)."""
-        print("Configuring 8-bit Quantization...")
+        print("Configuring 4-bit Quantization...")
         
-        # 8-bit quantization cu skip pentru classifier
+        # 4-bit quantization cu skip pentru classifier
         bnb_config = BitsAndBytesConfig(
-            load_in_8bit=True,
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
             llm_int8_skip_modules=["classifier"]
         )
         
-        print("Loading base model in 8-bit...")
+        print("Loading base model in 4-bit...")
         model = AutoModelForSequenceClassification.from_pretrained(
             self.model_name,
             num_labels=self.num_labels,
@@ -108,9 +111,8 @@ class TextOnlyTrainer:
             quantization_config=bnb_config,
         )
         
-        # Pregătire pentru antrenament pe 8-biți
         model = prepare_model_for_kbit_training(model)
-        model.config.use_cache = False
+        model.config.use_cache = False #ca sa nu salveze calcule intermediare
 
         print("Configuring LoRA...")
         lora_config = LoraConfig(
@@ -134,21 +136,23 @@ class TextOnlyTrainer:
         optimizer,
         scheduler,
         gradient_accumulation_steps: int = 1,
+        class_weights: Optional[torch.Tensor] = None,
     ) -> float:
-        """Antrenează o epocă cu gradient accumulation."""
+      
         model.train()
         total_loss = 0.0
 
-        # Ponderile pentru clase - asigură-te că sunt corecte
-        class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(self.device)
-        loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        if class_weights is not None:
+            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            loss_fn = torch.nn.CrossEntropyLoss()
 
         progress_bar = tqdm(train_loader, desc="Training", position=0)
         optimizer.zero_grad()
         
         for step, batch in enumerate(progress_bar):
             input_ids = batch["input_ids"].to(self.device)
-            attention_mask = batch["attention_mask"].to(self.device)
+            attention_mask = batch["attention_mask"].to(self.device) #ignora tokenii de padding
             labels = batch["labels"].to(self.device)
 
             outputs = model(
@@ -156,7 +160,7 @@ class TextOnlyTrainer:
                 attention_mask=attention_mask,
             )
             
-            # Loss ponderat
+            #loss ponderat
             loss = loss_fn(outputs.logits, labels)
             loss = loss / gradient_accumulation_steps
             loss.backward()
@@ -167,16 +171,15 @@ class TextOnlyTrainer:
                 scheduler.step()
                 optimizer.zero_grad()
 
-            # Afișăm loss-ul real (neîmpărțit)
             actual_loss = loss.item() * gradient_accumulation_steps
             total_loss += actual_loss
             progress_bar.set_postfix({"loss": f"{actual_loss:.4f}"})
 
         return total_loss / len(train_loader)
 
-    @torch.no_grad()
+    @torch.no_grad() #nu calculeaza gradienti in timpul evaluarii
     def evaluate(self, model, val_loader: DataLoader) -> tuple[float, float, float]:
-        """Evaluează modelul și calculează F1 macro."""
+        
         model.eval()
         total_loss = 0.0
         all_predictions = []
@@ -196,7 +199,6 @@ class TextOnlyTrainer:
 
             total_loss += outputs.loss.item()
 
-            # Predictions și labels
             predictions = outputs.logits.argmax(dim=-1)
             all_predictions.extend(predictions.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
@@ -211,25 +213,25 @@ class TextOnlyTrainer:
         train_dataset,
         val_dataset,
         checkpoint_dir: Path,
-        num_epochs: int = 5,
-        batch_size: int = 32,
-        learning_rate: float = 2e-4,
-        lora_r: int = 16,
-        lora_alpha: int = 32,
-        gradient_accumulation_steps: int = 1,
+        num_epochs: int,
+        batch_size: int,
+        learning_rate: float,
+        lora_r: int,
+        lora_alpha: int,
+        gradient_accumulation_steps: int,
+        class_weights: Optional[torch.Tensor] = None,
     ):
-        """Antrenament complet cu QLoRA (8-bit + LoRA)."""
+       
         print("="*80)
-        print("Text-Only Training with QLoRA (8-bit)")
+        print("Text-Only Training with QLoRA")
         print("="*80)
 
-        # Setup model
+        #setup model
         model = self.setup_model_with_lora(lora_r=lora_r, lora_alpha=lora_alpha)
 
-        # Data collator pentru padding dinamic
+        #data collator pentru padding dinamic
         data_collator = DataCollatorWithPadding(tokenizer=self.tokenizer)
 
-        # DataLoaders
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
@@ -238,12 +240,12 @@ class TextOnlyTrainer:
         )
         val_loader = DataLoader(
             val_dataset,
-            batch_size=batch_size * 2,
+            batch_size=batch_size * 2, #la evaluare putem folosi batch mai mare pentru eficienta
             shuffle=False,
             collate_fn=data_collator,
         )
 
-        # Optimizer și scheduler
+        #optimizer si scheduler
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
         total_steps = len(train_loader) * num_epochs // gradient_accumulation_steps
@@ -253,7 +255,7 @@ class TextOnlyTrainer:
             num_training_steps=total_steps,
         )
 
-        # Training loop
+        #training loop
         best_val_f1 = 0.0
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -268,19 +270,19 @@ class TextOnlyTrainer:
             print(f"\nEpoch {epoch + 1}/{num_epochs}")
             print("-" * 80)
 
-            # Train
-            train_loss = self.train_epoch(model, train_loader, optimizer, scheduler, gradient_accumulation_steps)
+            #train
+            train_loss = self.train_epoch(model, train_loader, optimizer, scheduler, gradient_accumulation_steps, class_weights)
             print(f"Train Loss: {train_loss:.4f}")
 
-            # Evaluate
+            #evaluate
             val_loss, val_acc, val_f1 = self.evaluate(model, val_loader)
             print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1 Macro: {val_f1:.4f}")
 
-            # Save best model based on F1 Macro
+            #salvam cel mai bun model bazat pe F1 Macro
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
                 best_model_path = checkpoint_dir / "best_model"
-                print(f"✅ New best model! F1 Macro: {val_f1:.4f} - Saving to {best_model_path}")
+                print(f"New best model! F1 Macro: {val_f1:.4f} - Saving to {best_model_path}")
                 model.save_pretrained(best_model_path)
                 self.tokenizer.save_pretrained(best_model_path)
 
@@ -292,15 +294,13 @@ class TextOnlyTrainer:
 
 
 def main():
-    """Main training function."""
-    
-    # Paths
+
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
     transcripts_en_json = data_dir / "Transcription_en.json"
     checkpoint_dir = Path("checkpoints/roberta_text_en")
     
-    # Verificare fișiere
+
     if not labels_csv.exists():
         raise FileNotFoundError(f"Labels file not found: {labels_csv}")
     if not transcripts_en_json.exists():
@@ -310,7 +310,7 @@ def main():
     print("Loading MSP-Podcast English Text Data")
     print("="*80)
     
-    # Load train dataset
+   
     print("\n1. Loading Train dataset...")
     train_dataset_msp = MSP_Podcast_Dataset(
         audio_root=str(data_dir / "Audios"),
@@ -318,11 +318,8 @@ def main():
         transcripts_en_json=str(transcripts_en_json),
         partition="Train",
         modalities=['text_en'],
-        use_cache=True,
-        max_workers=8
     )
     
-    # Load val dataset
     print("\n2. Loading Validation dataset...")
     val_dataset_msp = MSP_Podcast_Dataset(
         audio_root=str(data_dir / "Audios"),
@@ -330,20 +327,17 @@ def main():
         transcripts_en_json=str(transcripts_en_json),
         partition="Development",
         modalities=['text_en'],
-        use_cache=True,
-        max_workers=8
     )
     
-    print(f"\n✅ Data loaded successfully!")
+    print(f"\n Data loaded successfully!")
     print(f"   Train: {len(train_dataset_msp)} samples")
     print(f"   Val: {len(val_dataset_msp)} samples\n")
     
-    # Create trainer and datasets
+    #cream trainer si datasets
     trainer = TextOnlyTrainer()
     train_dataset = TextEncoderDataset(train_dataset_msp, trainer.tokenizer)
     val_dataset = TextEncoderDataset(val_dataset_msp, trainer.tokenizer)
     
-    # Training
     trainer.train(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
@@ -353,7 +347,11 @@ def main():
         learning_rate=2e-4,
         lora_r=16,
         lora_alpha=32,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=2,
+        class_weights=train_dataset_msp.get_class_weights(
+            all_train_labels=train_dataset_msp.metadata['label_id'].values,
+            device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
     )
 
 

@@ -1,8 +1,3 @@
-"""
-WavLM Fine-tuning cu Standard LoRA (FP16/BF16) pentru clasificare audio.
-Script optimizat pentru acuratețe maximă și prevenirea OOM pe RTX 4060.
-Model: microsoft/wavlm-base-plus
-"""
 from pathlib import Path
 from typing import Optional
 from contextlib import nullcontext
@@ -25,6 +20,7 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import (
     AutoModelForAudioClassification, 
     AutoFeatureExtractor,
+    BitsAndBytesConfig,
     get_linear_schedule_with_warmup,
 )
 from peft import (
@@ -104,6 +100,15 @@ class AudioTrainerWavLM:
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
 
     def setup_model_with_lora(self, lora_r: int = 16, lora_alpha: int = 32):
+
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            llm_int8_skip_modules=["classifier"]
+        )
+
         print("Loading model in FP32 for numerical stability...")
         model = AutoModelForAudioClassification.from_pretrained(
             self.model_name,
@@ -112,6 +117,7 @@ class AudioTrainerWavLM:
             label2id=self.label2id,
             torch_dtype=torch.float32,
             ignore_mismatched_sizes=True,
+            quantization_config=bnb_config,
         )
 
         model.config.use_cache = False
@@ -123,7 +129,6 @@ class AudioTrainerWavLM:
             lora_alpha=lora_alpha,
             lora_dropout=0.1,
             bias="none",
-            # CORECRURA 1: "all-linear" atacă toate straturile dense, maximizând capacitatea de adaptare
             target_modules="all-linear", 
             modules_to_save=["classifier", "projector"], 
         )
@@ -157,7 +162,7 @@ class AudioTrainerWavLM:
             if torch.isnan(input_values).any() or torch.isinf(input_values).any():
                 consecutive_nans += 1
                 if consecutive_nans > MAX_CONSECUTIVE_NANS:
-                    print(f"\n❌ ABORT: Too many consecutive NaN batches ({consecutive_nans}).")
+                    print(f"\nABORT: Too many consecutive NaN batches ({consecutive_nans}).")
                     return float('nan')
                 continue
             else:
