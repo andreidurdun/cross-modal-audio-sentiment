@@ -6,30 +6,21 @@ import json
 import sys
 from typing import Dict, Sequence
 import pandas as pd
-import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import pandas as pd
-import yaml
-
 from src.preprocessing.transcriber import AudioTranscriber
 from src.utils.helpers import set_seed
 
 
-DEFAULT_CONFIG_PATH = Path("configs/config.yaml")
+DEFAULT_DATASET_ROOT = Path("MSP_Podcast")
 DEFAULT_PARTITIONS: Sequence[str] = ("Train", "Development")
 DEFAULT_MAX_FILES: int | None = None
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT_EN_DIR = Path("MSP_Podcast/Transcription_en")
 DEFAULT_OUTPUT_JSON = Path("MSP_Podcast/Transcription_en.json")
-
-
-def load_config(config_path: Path) -> Dict:
-    with config_path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def filter_partition_rows(df: pd.DataFrame, partition: str, max_files: int | None) -> pd.DataFrame:
@@ -75,7 +66,7 @@ def process_partition(
 
 
 def run_transcribe(
-    config_path: Path = DEFAULT_CONFIG_PATH,
+    dataset_root: Path = DEFAULT_DATASET_ROOT,
     partitions: Sequence[str] = DEFAULT_PARTITIONS,
     max_files: int | None = DEFAULT_MAX_FILES,
     seed: int = DEFAULT_SEED,
@@ -83,8 +74,6 @@ def run_transcribe(
 ):
     set_seed(seed)
 
-    cfg = load_config(config_path)
-    dataset_root = Path(cfg["data"]["dataset_root"])
     audio_dir = dataset_root / "Audios"
     metadata_csv = dataset_root / "Labels" / "labels_consensus.csv"
 

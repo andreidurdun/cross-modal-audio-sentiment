@@ -10,7 +10,6 @@ Three-channel pipeline for MSP-Podcast 2.0:
 
 ```
 configs/
-  config.yaml            # training + data hyperparameters
   model_config.json      # backbone- and head-specific settings
 
 data/
@@ -60,7 +59,7 @@ pip install -r requirements.txt
    ```
 3. **Train multimodal model**
    ```bash
-   python scripts/train.py --config configs/config.yaml
+  python scripts/train.py
    ```
 
 Both `data/` and `checkpoints/` are ignored by git; copy sample metadata if you need to share minimal repros.

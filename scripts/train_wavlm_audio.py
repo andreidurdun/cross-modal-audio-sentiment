@@ -8,6 +8,8 @@ import sys
 import numpy as np
 from sklearn.metrics import f1_score
 import json
+import time
+import matplotlib.pyplot as plt
 import warnings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -15,12 +17,12 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", message=".*use_reentrant parameter should be passed explicitly.*")
 
 from torch.utils.data import DataLoader, Dataset
 from transformers import (
     AutoModelForAudioClassification, 
     AutoFeatureExtractor,
-    BitsAndBytesConfig,
     get_linear_schedule_with_warmup,
 )
 from peft import (
@@ -28,7 +30,7 @@ from peft import (
     TaskType, 
     get_peft_model, 
 )
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from src.data.dataset import MSP_Podcast_Dataset
 
@@ -45,12 +47,13 @@ class AudioWaveLMDataset(Dataset):
         sample = self.msp_dataset[idx]
         audio = sample['audio'].numpy() if isinstance(sample['audio'], torch.Tensor) else sample['audio']
         
-        # Verifică și curăță audio-ul de valori invalide
+        
         if np.isnan(audio).any() or np.isinf(audio).any():
+            print(f"[WARN] NaN or Inf values found in audio sample at index {idx}. Replacing with zeros.")
             audio = np.zeros_like(audio)
 
-        # Trunchiere la 6 secunde
-        MAX_SECONDS = 6 
+        #trunchiere la 5 secunde
+        MAX_SECONDS = 5 
         max_samples = self.sample_rate * MAX_SECONDS
         
         if audio.shape[-1] > max_samples:
@@ -75,7 +78,7 @@ class AudioCollator:
         batch_size = len(input_features)
         max_length = max(feature.shape[-1] for feature in input_features)
         
-        # Generăm tensori pentru input și mască de atenție (padding dinamic pe batch)
+        #generam tensori pentru input si masca de atentie (padding dinamic pe batch)
         padded_inputs = torch.zeros((batch_size, max_length), dtype=torch.float32)
         attention_mask = torch.zeros((batch_size, max_length), dtype=torch.long)
         
@@ -100,27 +103,21 @@ class AudioTrainerWavLM:
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
 
     def setup_model_with_lora(self, lora_r: int = 16, lora_alpha: int = 32):
+        model_dtype = torch.float32
 
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            llm_int8_skip_modules=["classifier"]
-        )
-
-        print("Loading model in FP32 for numerical stability...")
+        print("Loading base model in native precision...")
         model = AutoModelForAudioClassification.from_pretrained(
             self.model_name,
             num_labels=self.num_labels,
             id2label=self.id2label,
             label2id=self.label2id,
-            torch_dtype=torch.float32,
             ignore_mismatched_sizes=True,
-            quantization_config=bnb_config,
+            torch_dtype=model_dtype,
         )
 
         model.config.use_cache = False
+        # Gradient checkpointing disabled pentru viteză (trade-off: mai mult VRAM)
+        # model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
         print("Configuring LoRA...")
         lora_config = LoraConfig(
@@ -138,18 +135,37 @@ class AudioTrainerWavLM:
         
         return model.to(self.device)
 
-    def train_epoch(self, model, train_loader, optimizer, scheduler, scaler, use_amp, gradient_accumulation_steps=1) -> float:
+    def train_epoch(
+        self,
+        model,
+        train_loader,
+        optimizer,
+        scheduler,
+        scaler,
+        use_amp,
+        gradient_accumulation_steps=1,
+        class_weights: Optional[torch.Tensor] = None,
+    ) -> float:
         model.train()
         total_loss = 0.0
         valid_steps = 0
         consecutive_nans = 0
-        MAX_CONSECUTIVE_NANS = 100 
+        MAX_CONSECUTIVE_NANS = 100
 
-        # Ponderile pentru clase - vitale pentru MSP-Podcast
-        class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(self.device)
-        loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        if class_weights is not None:
+            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            loss_fn = torch.nn.CrossEntropyLoss()
 
-        progress_bar = tqdm(train_loader, desc="Training", position=0)
+        progress_bar = tqdm(
+            train_loader,
+            desc="Training",
+            position=0,
+            leave=True,
+            dynamic_ncols=True,
+            mininterval=0.5,   # update max de 2 ori/s
+        )
+
         optimizer.zero_grad(set_to_none=True)
         
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -171,17 +187,17 @@ class AudioTrainerWavLM:
             autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type='cuda') if use_amp else nullcontext()
 
             with autocast_ctx:
-                # 1. Rulăm modelul FĂRĂ labels pentru a extrage logiții puri
+                
                 outputs = model(
                     input_values=input_values, 
                     attention_mask=attention_mask
                 )
                 
-                # 2. Asigurăm forma corectă [batch_size, num_classes] și cast la FP32 pentru stabilitate
+                #asiguram forma corecta a tensorilor pentru calculul loss-ului, indiferent de batch size sau lungimea secventei
                 logits = outputs.logits.float().view(-1, self.num_labels)
                 labels_flat = labels.view(-1)
                 
-                # 3. Calculăm loss-ul ponderat manual
+             
                 loss = loss_fn(logits, labels_flat)
             
             if torch.isnan(loss) or torch.isinf(loss):
@@ -234,15 +250,23 @@ class AudioTrainerWavLM:
         return avg_loss
 
     @torch.no_grad()
-    def evaluate(self, model, val_loader, use_amp: bool) -> tuple:
+    def evaluate(
+        self,
+        model,
+        val_loader,
+        use_amp: bool,
+        class_weights: Optional[torch.Tensor] = None,
+    ) -> tuple:
         model.eval()
         total_loss = 0.0
+        total_samples = 0
         all_predictions = []
         all_labels = []
 
-        # Păstrăm ponderile și la validare pentru a avea un Loss comparabil
-        class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(self.device)
-        val_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        if class_weights is not None:
+            val_loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            val_loss_fn = torch.nn.CrossEntropyLoss()
 
         progress_bar = tqdm(val_loader, desc="Evaluating", position=0, leave=False)
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
@@ -259,22 +283,45 @@ class AudioTrainerWavLM:
                     attention_mask=attention_mask
                 )
                 
-                # Același procedeu de siguranță pentru forma tensorilor
+    
                 logits = outputs.logits.float().view(-1, self.num_labels)
                 labels_flat = labels.view(-1)
                 
                 loss = val_loss_fn(logits, labels_flat)
-                
-            total_loss += loss.item()
+
+            batch_size = labels_flat.size(0)
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
 
             predictions = logits.argmax(dim=-1)
             all_predictions.extend(predictions.cpu().numpy())
             all_labels.extend(labels_flat.cpu().numpy())
 
-        avg_loss = total_loss / len(val_loader)
+        avg_loss = total_loss / total_samples
         accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
         f1_macro = f1_score(all_labels, all_predictions, average='macro', zero_division=0)
         return avg_loss, accuracy, f1_macro
+
+    def _plot_training_curves(self, train_losses, val_losses, checkpoint_dir):
+        """Genereaza si salveaza grafic cu loss-urile de antrenare si validare"""
+        epochs = range(1, len(train_losses) + 1)
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2, marker='o')
+        plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2, marker='s')
+
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title('Training and Validation Loss', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        plot_path = checkpoint_dir / "training_curves.pdf"
+        plt.savefig(plot_path, format='pdf', bbox_inches='tight')
+        plt.close()
+
+        print(f"Training curves saved to: {plot_path}")
     
     def train(
         self,
@@ -290,10 +337,14 @@ class AudioTrainerWavLM:
         gradient_accumulation_steps=8,
         use_amp=True,
         num_workers=4,
+        class_weights: Optional[torch.Tensor] = None,
     ):
         print("="*80)
         print("Audio Training with AMP - WavLM")
         print("="*80)
+
+        #incepe tracking timpului
+        start_time = time.time()
 
         model = self.setup_model_with_lora(lora_r=lora_r, lora_alpha=lora_alpha)
 
@@ -304,14 +355,16 @@ class AudioTrainerWavLM:
             use_amp = False
 
         collator = AudioCollator()
+
+        #pt widows pastram 0 worker pentru a evita problemele de multiprocessing
+        effective_num_workers = 0 if os.name == "nt" else max(0, num_workers)
         
-        # Num_workers a fost lăsat la 0 pentru a preveni crash-uri pe Windows la procesare audio masivă
         train_loader = DataLoader(
             train_dataset,
             batch_size=batch_size,
             shuffle=True,
             collate_fn=collator,
-            num_workers=0,
+            num_workers=effective_num_workers,
             pin_memory=True if self.device == "cuda" else False,
         )
         val_loader = DataLoader(
@@ -319,7 +372,7 @@ class AudioTrainerWavLM:
             batch_size=batch_size * 2,
             shuffle=False,
             collate_fn=collator,
-            num_workers=0,
+            num_workers=effective_num_workers,
             pin_memory=True if self.device == "cuda" else False,
         )
         
@@ -329,7 +382,7 @@ class AudioTrainerWavLM:
                 batch_size=batch_size * 2,
                 shuffle=False,
                 collate_fn=collator,
-                num_workers=0,
+                num_workers=effective_num_workers,
                 pin_memory=True if self.device == "cuda" else False,
             )
         else:
@@ -343,7 +396,21 @@ class AudioTrainerWavLM:
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=int(total_steps * 0.1), num_training_steps=total_steps)
 
         best_val_f1 = 0.0
+        best_val_loss = float('inf')
+        best_val_acc = 0.0
+        last_train_loss = 0.0
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+        #liste pentru tracking loss-urile
+        train_losses = []
+        val_losses = []
+
+        print(f"\nStarting training for {num_epochs} epochs...")
+        print(f"Device: {self.device}")
+        print(f"Batch size: {batch_size} (Effective: {batch_size * gradient_accumulation_steps})")
+        print(f"Learning rate: {learning_rate}")
+        print(f"LoRA r={lora_r}, alpha={lora_alpha}")
+        print(f"Best model saved by: F1 Macro\n")
 
         for epoch in range(num_epochs):
             print(f"\nEpoch {epoch + 1}/{num_epochs}")
@@ -357,28 +424,87 @@ class AudioTrainerWavLM:
                 scaler,
                 use_amp,
                 gradient_accumulation_steps,
+                class_weights,
             )
+            train_losses.append(train_loss)
+            last_train_loss = train_loss
             print(f"Train Loss: {train_loss:.4f}")
 
-            val_loss, val_acc, val_f1 = self.evaluate(model, val_loader, use_amp)
+            val_loss, val_acc, val_f1 = self.evaluate(model, val_loader, use_amp, class_weights)
+            val_losses.append(val_loss)
             print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1 Macro: {val_f1:.4f}")
 
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
+                best_val_loss = val_loss
+                best_val_acc = val_acc
                 best_model_path = checkpoint_dir / "best_model"
-                print(f"✅ New best model! F1 Macro: {val_f1:.4f} - Saving...")
-                
-                model.save_pretrained(best_model_path)
+                print(f"New best model! F1 Macro: {val_f1:.4f} - Saving...")
+
+                # Salvam modelul complet cand e posibil (compatibil cu load_audio_backbone)
+                try:
+                    merged_model = model.merge_and_unload() if hasattr(model, "merge_and_unload") else model
+                    merged_model.save_pretrained(best_model_path)
+                    print("Saved merged full model for downstream backbone loading.")
+                except Exception as exc:
+                    print(f"[WARN] Could not merge LoRA adapters ({exc}). Saving adapter-only checkpoint.")
+                    model.save_pretrained(best_model_path)
+
                 self.feature_extractor.save_pretrained(best_model_path)
+
+        #calculeaza timp total
+        end_time = time.time()
+        total_time_seconds = end_time - start_time
+        total_time_minutes = total_time_seconds / 60
+        total_time_hours = total_time_minutes / 60
+
+        print("\n" + "="*80)
+        print(f"Training Complete!")
+        print(f"Best Validation F1 Macro: {best_val_f1:.4f}")
+        print(f"Model saved to: {checkpoint_dir / 'best_model'}")
+        print("="*80)
+
+        #salveaza metrici antrenarii in JSON
+        training_results = {
+            "total_training_time": {
+                "seconds": total_time_seconds,
+                "minutes": total_time_minutes,
+                "hours": total_time_hours
+            },
+            "best_model_metrics": {
+                "val_loss": float(best_val_loss),
+                "val_accuracy": float(best_val_acc),
+                "val_f1_macro": float(best_val_f1)
+            },
+            "final_train_metrics": {
+                "train_loss": float(last_train_loss)
+            },
+            "hyperparameters": {
+                "num_epochs": num_epochs,
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "lora_r": lora_r,
+                "lora_alpha": lora_alpha,
+                "gradient_accumulation_steps": gradient_accumulation_steps
+            },
+            "training_curves": {
+                "train_losses": [float(l) for l in train_losses],
+                "val_losses": [float(l) for l in val_losses]
+            }
+        }
+
+        results_file = checkpoint_dir / "training_results.json"
+        with open(results_file, 'w') as f:
+            json.dump(training_results, f, indent=2)
+        print(f"\nTraining results saved to: {results_file}")
+
+        #genereaza si salveaza grafic cu loss-urile
+        self._plot_training_curves(train_losses, val_losses, checkpoint_dir)
 
         if test_loader is not None:
             print("\nEvaluating on test set...")
-            test_loss, test_acc, test_f1 = self.evaluate(model, test_loader, use_amp)
+            test_loss, test_acc, test_f1 = self.evaluate(model, test_loader, use_amp, class_weights)
             print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f} | Test F1 Macro: {test_f1:.4f}")
-            return {'best_val_f1': best_val_f1, 'test_loss': test_loss, 'test_acc': test_acc, 'test_f1': test_f1}
-        else:
-            print("\nNo test dataset provided. Skipping test evaluation.")
-            return {'best_val_f1': best_val_f1}
 
 def main():
     data_dir = Path("MSP_Podcast")
@@ -398,7 +524,6 @@ def main():
         labels_csv=str(labels_csv),
         partition="Train",
         modalities=['audio'],
-        use_cache=True,
     )
 
     print("\n2. Loading Validation dataset...")
@@ -407,7 +532,6 @@ def main():
         labels_csv=str(labels_csv),
         partition="Development",
         modalities=['audio'],
-        use_cache=True,
     )
 
     print(f"\nData loaded successfully!")
@@ -420,31 +544,23 @@ def main():
     val_dataset = AudioWaveLMDataset(val_dataset_msp, feature_extractor)
     
     trainer = AudioTrainerWavLM()
-    
-    # CORECRURA 2: LR 3e-4 si Batch Size sigur pentru VRAM
-    results = trainer.train(
+    trainer.train(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         test_dataset=None,
         checkpoint_dir=checkpoint_dir,
-        num_epochs=5,
-        batch_size=16,                  # Mai mic, previne aglomerarea RAM-ului
-        gradient_accumulation_steps=4, # 8x8 = 64 Effective Batch Size
-        learning_rate=3e-4,            # Optim pentru LoRA
-        lora_r=16,
-        lora_alpha=32,
+        num_epochs=5,                   # Redus pentru testare rapidă
+        batch_size=16,                  # Crescut (avem VRAM disponibil fără checkpointing)
+        gradient_accumulation_steps=2,  # Redus
+        learning_rate=3e-4,            
+        lora_r=8,                       # Redus pentru mai putini parametri
+        lora_alpha=16,                  # Redus proportional
         use_amp=True,
+        class_weights=train_dataset_msp.get_class_weights(
+            all_train_labels=train_dataset_msp.metadata['label_id'].values,
+            device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        ),
     )
-
-    results_path = checkpoint_dir / "best_model" / "training_results.json"
-    results_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(results_path, 'w') as f:
-        json.dump(results, f, indent=2)
-
-    print(f"\nResults saved to: {results_path}")
-    print("\n" + "="*80)
-    print("Training Complete!")
-    print("="*80)
 
 if __name__ == "__main__":
     main()

@@ -1,14 +1,11 @@
-"""
-Antrenament RoBERTuito cu QLoRA (8-bit) folosind text spaniolă din traducerile ES.
-Script optimizat pentru acuratețe maximă și consum redus de memorie (RTX 4060).
-Model: pysentimiento/robertuito-sentiment-analysis
-"""
 from pathlib import Path
 from typing import Optional
 import sys
 import warnings
 import numpy as np
 import json
+import time
+import matplotlib.pyplot as plt
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -31,20 +28,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Suppress bitsandbytes quantization warnings
+
 warnings.filterwarnings("ignore", category=UserWarning, module="bitsandbytes")
+warnings.filterwarnings("ignore", message=".*use_reentrant parameter should be passed explicitly.*")
+
 
 from src.data.dataset import MSP_Podcast_Dataset
 
 
 class TextEncoderDataset(Dataset):
-    """Dataset wrapper pentru tokenizare text din MSP_Podcast_Dataset."""
-
     def __init__(self, msp_dataset: MSP_Podcast_Dataset, tokenizer):
         self.msp_dataset = msp_dataset
         self.tokenizer = tokenizer
         
-        # Validare sigură a etichetelor (Prevenim CUDA device-side assert error)
+        #validare a etichetelor (prevenim CUDA device-side assert error)
         self.labels = []
         for _, row in msp_dataset.metadata.iterrows():
             lbl = int(row['label_id'])
@@ -52,11 +49,11 @@ class TextEncoderDataset(Dataset):
                 raise ValueError(f"CRITICAL: Found invalid label '{lbl}'. Must be 0, 1, or 2.")
             self.labels.append(lbl)
             
-        # Pre-tokenize everything at init
+        #pre-tokenize everything at init
         self.encodings = self._precompute_encodings()
 
     def _precompute_encodings(self):
-        """Pre-tokenizează toate textele la init (o singură dată)."""
+       #pretokenizare la init
         texts = []
         for idx in range(len(self.msp_dataset)):
             sample = self.msp_dataset[idx]
@@ -66,13 +63,13 @@ class TextEncoderDataset(Dataset):
             texts.append(text.strip())
         
         print(f"Pre-tokenizing {len(texts)} texts...")
-        # REPARAT: padding='max_length', return_tensors='pt', max_length=128
+       
         encodings = self.tokenizer(
             texts,
             truncation=True,
             padding="max_length",  
-            max_length=128,        # Robertuito e antrenat pe tweet-uri, 128 este ideal!
-            return_tensors="pt",   # Garantăm că ieșirea e formată din tensori egali
+            max_length=128,      
+            return_tensors="pt",
         )
         return encodings
 
@@ -80,14 +77,13 @@ class TextEncoderDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        # Extragem feliile de tensor pentru sample-ul curent
+       
         item = {key: val[idx].clone().detach() for key, val in self.encodings.items()}
         item["labels"] = torch.tensor(self.labels[idx], dtype=torch.long)
         return item
 
 
 class TextOnlyTrainerES:
-    """Trainer pentru antrenament text-only cu QLoRA pentru spaniolă."""
 
     def __init__(
         self,
@@ -104,7 +100,6 @@ class TextOnlyTrainerES:
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     def setup_model_with_lora(self, lora_r: int = 16, lora_alpha: int = 32):
-        print("Configuring 8-bit Quantization...")
         
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -114,7 +109,7 @@ class TextOnlyTrainerES:
             llm_int8_skip_modules=["classifier"]
         )
 
-        print("Loading base model in 8-bit...")
+        print("Loading base model in 4 bit...")
         model = AutoModelForSequenceClassification.from_pretrained(
             self.model_name,
             num_labels=self.num_labels,
@@ -122,14 +117,11 @@ class TextOnlyTrainerES:
             label2id=self.label2id,
             ignore_mismatched_sizes=True,
             quantization_config=bnb_config,
-            # Fallback opțional dacă mai iei erori cu SDPA pe PyTorch 2.0+
-            # attn_implementation="eager" 
         )
 
         model = prepare_model_for_kbit_training(model)
         model.config.use_cache = False 
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
-
+    
         print("Configuring LoRA...")
         lora_config = LoraConfig(
             task_type=TaskType.SEQ_CLS,
@@ -153,16 +145,27 @@ class TextOnlyTrainerES:
         optimizer,
         scheduler,
         gradient_accumulation_steps: int = 1,
+        class_weights: Optional[torch.Tensor] = None,
     ) -> float:
         model.train()
         total_loss = 0.0
 
-        # Ponderile pentru clase
-        class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(self.device)
-        loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        if class_weights is not None:
+            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            loss_fn = torch.nn.CrossEntropyLoss()
+     
 
-        progress_bar = tqdm(train_loader, desc="Training", position=0)
-        optimizer.zero_grad(set_to_none=True) # Optimizare extra pt PyTorch
+        progress_bar = tqdm(
+            train_loader,
+            desc="Training",
+            position=0,
+            leave=True,
+            dynamic_ncols=True,
+            mininterval=0.5,   # update max de 2 ori/s
+        )
+
+        optimizer.zero_grad()
         
         for step, batch in enumerate(progress_bar):
             input_ids = batch["input_ids"].to(self.device)
@@ -172,7 +175,6 @@ class TextOnlyTrainerES:
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                labels=labels,
             )
 
             loss = loss_fn(outputs.logits, labels)
@@ -192,17 +194,24 @@ class TextOnlyTrainerES:
         return total_loss / len(train_loader)
 
     @torch.no_grad()
-    def evaluate(self, model, val_loader: DataLoader) -> tuple[float, float, float]:
+    def evaluate(
+        self,
+        model,
+        val_loader: DataLoader,
+        class_weights: Optional[torch.Tensor] = None,
+    ) -> tuple[float, float, float]:
         model.eval()
         total_loss = 0.0
+        total_samples = 0
         all_predictions = []
         all_labels = []
 
+        if class_weights is not None:
+            loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            loss_fn = torch.nn.CrossEntropyLoss()
+
         progress_bar = tqdm(val_loader, desc="Evaluating", position=0, leave=False)
-        
-        # Ponderile pt loss de validare
-        class_weights = torch.tensor([1.02, 1.00, 1.60], dtype=torch.float32).to(self.device)
-        loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
         for batch in progress_bar:
             input_ids = batch["input_ids"].to(self.device)
@@ -215,16 +224,39 @@ class TextOnlyTrainerES:
             )
 
             loss = loss_fn(outputs.logits, labels)
-            total_loss += loss.item()
+            batch_size = labels.size(0)
+            total_loss += loss.item() * batch_size
+            total_samples += batch_size
 
             predictions = outputs.logits.argmax(dim=-1)
             all_predictions.extend(predictions.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
 
-        avg_loss = total_loss / len(val_loader)
+        avg_loss = total_loss / total_samples
         accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
         f1_macro = f1_score(all_labels, all_predictions, average='macro', zero_division=0)
         return avg_loss, accuracy, f1_macro
+
+    def _plot_training_curves(self, train_losses, val_losses, checkpoint_dir):
+        """Genereaza si salveaza grafic cu loss-urile de antrenare si validare"""
+        epochs = range(1, len(train_losses) + 1)
+        
+        plt.figure(figsize=(10, 6))
+        plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2, marker='o')
+        plt.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2, marker='s')
+        
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title('Training and Validation Loss', fontsize=14, fontweight='bold')
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        
+        plot_path = checkpoint_dir / "training_curves.pdf"
+        plt.savefig(plot_path, format='pdf', bbox_inches='tight')
+        plt.close()
+        
+        print(f"Training curves saved to: {plot_path}")
 
     def train(
         self,
@@ -237,11 +269,13 @@ class TextOnlyTrainerES:
         lora_r: int = 16,
         lora_alpha: int = 32,
         gradient_accumulation_steps: int = 1,
+        class_weights: Optional[torch.Tensor] = None,
     ):
-        print("="*80)
-        print("Spanish Text-Only Training with QLoRA (8-bit)")
-        print("="*80)
+       
 
+        #incepe tracking timpului
+        start_time = time.time()
+        
         model = self.setup_model_with_lora(lora_r=lora_r, lora_alpha=lora_alpha)
 
         # Setat num_workers=0 pentru citire in-memory
@@ -257,7 +291,14 @@ class TextOnlyTrainerES:
         )
 
         best_val_f1 = 0.0
+        best_val_loss = float('inf')
+        best_val_acc = 0.0
+        last_train_loss = 0.0
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        #liste pentru tracking loss-urile
+        train_losses = []
+        val_losses = []
 
         print(f"\nStarting training for {num_epochs} epochs...")
         print(f"Device: {self.device}")
@@ -270,23 +311,72 @@ class TextOnlyTrainerES:
             print(f"\nEpoch {epoch + 1}/{num_epochs}")
             print("-" * 80)
 
-            train_loss = self.train_epoch(model, train_loader, optimizer, scheduler, gradient_accumulation_steps)
+            train_loss = self.train_epoch(model, train_loader, optimizer, scheduler, gradient_accumulation_steps, class_weights)
+            train_losses.append(train_loss)
+            last_train_loss = train_loss
             print(f"Train Loss: {train_loss:.4f}")
 
-            val_loss, val_acc, val_f1 = self.evaluate(model, val_loader)
+            val_loss, val_acc, val_f1 = self.evaluate(model, val_loader, class_weights)
+            val_losses.append(val_loss)
             print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1 Macro: {val_f1:.4f}")
 
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
+                best_val_loss = val_loss
+                best_val_acc = val_acc
                 best_model_path = checkpoint_dir / "best_model"
                 print(f"New best model! F1 Macro: {val_f1:.4f} - Saving to {best_model_path}")
                 model.save_pretrained(best_model_path)
                 self.tokenizer.save_pretrained(best_model_path)
 
+        #calculeaza timp total
+        end_time = time.time()
+        total_time_seconds = end_time - start_time
+        total_time_minutes = total_time_seconds / 60
+        total_time_hours = total_time_minutes / 60
+        
         print("\n" + "="*80)
         print(f"Training Complete!")
         print(f"Best Validation F1 Macro: {best_val_f1:.4f}")
+        print(f"Model saved to: {checkpoint_dir / 'best_model'}")
         print("="*80)
+        
+        #salveaza metrici antrenarii in JSON
+        training_results = {
+            "total_training_time": {
+                "seconds": total_time_seconds,
+                "minutes": total_time_minutes,
+                "hours": total_time_hours
+            },
+            "best_model_metrics": {
+                "val_loss": float(best_val_loss),
+                "val_accuracy": float(best_val_acc),
+                "val_f1_macro": float(best_val_f1)
+            },
+            "final_train_metrics": {
+                "train_loss": float(last_train_loss)
+            },
+            "hyperparameters": {
+                "num_epochs": num_epochs,
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "lora_r": lora_r,
+                "lora_alpha": lora_alpha,
+                "gradient_accumulation_steps": gradient_accumulation_steps
+            },
+            "training_curves": {
+                "train_losses": [float(l) for l in train_losses],
+                "val_losses": [float(l) for l in val_losses]
+            }
+        }
+        
+        results_file = checkpoint_dir / "training_results.json"
+        with open(results_file, 'w') as f:
+            json.dump(training_results, f, indent=2)
+        print(f"\nTraining results saved to: {results_file}")
+        
+        #genereaza si salveaza grafic cu loss-urile
+        self._plot_training_curves(train_losses, val_losses, checkpoint_dir)
 
 
 def main():
@@ -311,8 +401,6 @@ def main():
         transcripts_es_json=str(transcripts_es_json),
         partition="Train",
         modalities=['text_es'],
-        use_cache=True,
-        max_workers=8
     )
     
     print("\n2. Loading Validation dataset...")
@@ -322,11 +410,9 @@ def main():
         transcripts_es_json=str(transcripts_es_json),
         partition="Development",
         modalities=['text_es'],
-        use_cache=True,
-        max_workers=8
     )
 
-    print(f"\n✅ Data loaded successfully!")
+    print(f"\nData loaded successfully!")
     print(f"   Train: {len(train_dataset_msp)} samples")
     print(f"   Val: {len(val_dataset_msp)} samples\n")
     
@@ -339,11 +425,15 @@ def main():
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
         num_epochs=5,
-        batch_size=64, # Perfect pt VRAM cu max_length=128
+        batch_size=256,
         learning_rate=2e-4, 
         lora_r=16,
         lora_alpha=32,
         gradient_accumulation_steps=1,
+        class_weights=train_dataset_msp.get_class_weights(
+           all_train_labels=train_dataset_msp.metadata['label_id'].values,
+           device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        )
     )
 
 

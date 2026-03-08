@@ -1,16 +1,3 @@
-"""
-Script pentru pre-calcularea și salvarea embedding-urilor din backbones.
-Salvează embeddings de la RoBERTa-EN, RoBERTa-ES și WavLM pentru întregul dataset MSP-Podcast.
-
-Acest script accelerează training-ul prin:
-1. Pre-calculare embeddings o singură dată
-2. Salvare pe disc pentru refolosire
-3. Eliminare forward pass prin backbones la fiecare epocă
-
-Usage:
-    python scripts/extract_and_save_embeddings.py --partition train
-    python scripts/extract_and_save_embeddings.py --partition all
-"""
 import sys
 from pathlib import Path
 
@@ -34,16 +21,15 @@ from src.data.dataset import MSP_Podcast_Dataset
 
 
 class EmbeddingExtractor:
-    """Extrage și salvează embeddings de la backbones pretrenate."""
     
     def __init__(
         self,
-        output_dir: str = "data/embeddings",
+        output_dir: str = "MSP_Podcast/embeddings",
         text_en_checkpoint: str = "checkpoints/roberta_text_en",
         text_es_checkpoint: str = "checkpoints/roberta_text_es",
         audio_checkpoint: str = "checkpoints/wavlm_audio",
         dataset_root: str = "MSP_Podcast",
-        projection_dim: Optional[int] = 256,
+        projection_dim: Optional[int] = None,
         device: str = "cuda",
         batch_size: int = 32,
     ):
@@ -87,7 +73,7 @@ class EmbeddingExtractor:
             "microsoft/wavlm-base-plus"
         )
         
-        print(f"\n✓ Backbones loaded and ready!")
+        print(f"\nBackbones loaded and ready!")
         print(f"  Device: {device}")
         print(f"  Batch size: {batch_size}")
         print(f"  Output dir: {self.output_dir}")
@@ -145,10 +131,8 @@ class EmbeddingExtractor:
             transcripts_es_json=str(transcripts_es_json),
             partition=dataset_partition,
             modalities=["audio", "text_en", "text_es"],
-            use_cache=True,
-            max_workers=8,
         )
-        print(f"✓ Loaded {len(dataset)} samples\n")
+        print(f"Loaded {len(dataset)} samples\n")
         if len(dataset) == 0:
             raise ValueError(
                 f"No samples for partition '{partition}' (mapped to '{dataset_partition}'). "

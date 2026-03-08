@@ -175,6 +175,50 @@ class MSP_Podcast_Dataset(Dataset):
         
         return class_weights_tensor
 
+    def get_max_text_length(self):
+        """Returneaza lungimea celui mai lung text din dataset"""
+        max_length = 0
+        
+        for idx in range(len(self)):
+            sample = self[idx]
+            
+            if 'text_en' in self.modalities:
+                text_en = sample.get('text_en', '')
+                if text_en:
+                    max_length = max(max_length, len(text_en))
+            
+            if 'text_es' in self.modalities:
+                text_es = sample.get('text_es', '')
+                if text_es:
+                    max_length = max(max_length, len(text_es))
+        
+        return max_length
+
+    def get_max_audio_length_seconds(self):
+        """Returneaza durata maxima in secunde a unei inregistrari audio din dataset"""
+        if 'audio' not in self.modalities or self.audio_processor is None:
+            raise ValueError("Modalitatea 'audio' nu este activata in dataset")
+        
+        max_duration_seconds = 0.0
+        
+        for idx in tqdm(range(len(self.metadata)), desc="Calculating max audio duration"):
+            row = self.metadata.iloc[idx]
+            file_id = row['FileName']
+            audio_path = os.path.join(self.audio_root, f"{file_id}")
+            
+            if not audio_path.endswith('.wav'):
+                audio_path += '.wav'
+            
+            try:
+                waveform = self.audio_processor.load_waveform(audio_path)
+                duration_seconds = len(waveform) / self.target_sample_rate
+                max_duration_seconds = max(max_duration_seconds, duration_seconds)
+            except Exception as e:
+                print(f"[WARN] Eroare la incarcarea audio {audio_path}: {str(e)}")
+                continue
+        
+        return max_duration_seconds
+
     def __len__(self):
         return len(self.metadata)
 
@@ -243,6 +287,9 @@ def main():
         device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     )
     print(f"Class weights: {class_weights}")
+
+    max_length = train_dataset_msp.get_max_text_length()
+    print(f"Lungimea maxima a textului: {max_length}")
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,3 @@
-"""Backbone encoders for text and audio modalities - optimized for ensemble/fusion architectures."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,8 +8,34 @@ from torch import nn
 from transformers import AutoModel, AutoTokenizer, AutoModelForAudioClassification, AutoFeatureExtractor
 
 
+def _load_text_encoder_model(model_name: str) -> nn.Module:
+    """
+    Load a text encoder compatible with pooled embedding extraction.
+
+    If a PEFT adapter checkpoint is detected, load it with PEFT and extract the
+    underlying Roberta encoder so LoRA weights are effectively applied.
+    """
+    model_path = Path(model_name)
+    adapter_config = model_path / "adapter_config.json"
+
+    if adapter_config.exists():
+        from peft import AutoPeftModelForSequenceClassification
+
+        peft_model = AutoPeftModelForSequenceClassification.from_pretrained(model_name)
+        if hasattr(peft_model, "merge_and_unload"):
+            merged_model = peft_model.merge_and_unload()
+            if hasattr(merged_model, "roberta"):
+                return merged_model.roberta
+
+        base_model = peft_model.base_model.model
+        if hasattr(base_model, "roberta"):
+            return base_model.roberta
+        raise ValueError(f"Unsupported PEFT base model in checkpoint: {model_name}")
+
+    return AutoModel.from_pretrained(model_name)
+
+
 def _mean_pooling(last_hidden_state: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-    """Mean pooling with attention mask."""
     mask = attention_mask.unsqueeze(-1).type_as(last_hidden_state)
     summed = (last_hidden_state * mask).sum(dim=1)
     counts = mask.sum(dim=1).clamp(min=1)
@@ -42,7 +67,7 @@ class BaseTextBackbone(nn.Module):
         self.use_cls_pooling = use_cls_pooling
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name)
+        self.model = _load_text_encoder_model(model_name)
         self.hidden_size = self.model.config.hidden_size
         
         # Optional projection layer for ensemble/fusion
@@ -58,7 +83,6 @@ class BaseTextBackbone(nn.Module):
                 param.requires_grad = False
 
     def get_output_dim(self) -> int:
-        """Get embedding output dimension."""
         return self.output_dim
 
     def forward(
@@ -207,7 +231,7 @@ def load_text_en_backbone(
         freeze=freeze,
         projection_dim=projection_dim,
     )
-    print(f"✓ Loaded English text backbone from {best_model_path}")
+    print(f"Loaded English text backbone from {best_model_path}")
     print(f"  Output dim: {backbone.get_output_dim()}")
     return backbone
 
@@ -229,7 +253,7 @@ def load_text_es_backbone(
         freeze=freeze,
         projection_dim=projection_dim,
     )
-    print(f"✓ Loaded Spanish text backbone from {best_model_path}")
+    print(f"Loaded Spanish text backbone from {best_model_path}")
     print(f"  Output dim: {backbone.get_output_dim()}")
     return backbone
 
@@ -395,7 +419,7 @@ def load_audio_backbone(
         projection_dim=projection_dim,
         use_pooled_output=use_pooled_output,
     )
-    print(f"✓ Loaded audio backbone from {best_model_path}")
+    print(f"Loaded audio backbone from {best_model_path}")
     print(f"  Output dim: {backbone.get_output_dim()}")
     return backbone
 
@@ -419,7 +443,7 @@ def load_text_backbones(
             projection_dim=projection_dim,
         ),
     }
-    print(f"\n✓ Both text backbones loaded successfully!")
+    print(f"\nBoth text backbones loaded successfully!")
     print(f"  text_en output: {backbones['text_en'].get_output_dim()}")
     print(f"  text_es output: {backbones['text_es'].get_output_dim()}")
     return backbones
@@ -456,7 +480,7 @@ def load_all_backbones(
     }
     
     print(f"\n" + "="*60)
-    print(f"✓ All 3 backbones loaded successfully!")
+    print(f"All 3 backbones loaded successfully!")
     print(f"  text_en:  {backbones['text_en'].get_output_dim()} dim")
     print(f"  text_es:  {backbones['text_es'].get_output_dim()} dim")
     print(f"  audio:    {backbones['audio'].get_output_dim()} dim")
