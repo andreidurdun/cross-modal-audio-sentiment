@@ -355,6 +355,77 @@ def load_full_multimodal_model(
     return model
 
 
+def load_ccmt_only_model(
+    text_en_dim: int = 768,
+    text_es_dim: int = 768,
+    audio_dim: int = 768,
+    num_classes: int = 3,
+    ccmt_dim: int = 768,
+    num_patches_per_modality: int = 100,
+    ccmt_depth: int = 4,
+    ccmt_heads: int = 4,
+    ccmt_mlp_dim: int = 1024,
+    ccmt_dropout: float = 0.2,
+    device: Optional[str] = None,
+) -> MultimodalEmotionModel:
+    """
+    Încarcă modelul DOAR cu fusion + CCMT (fără backbones).
+    
+    Util pentru antrenarea cu embeddings precalculate, economisind
+    memorie și timp de încărcare.
+    
+    Args:
+        text_en_dim: Dimensiune embeddings text EN
+        text_es_dim: Dimensiune embeddings text ES
+        audio_dim: Dimensiune embeddings audio
+        num_classes: Număr clase
+        ccmt_dim: Dimensiune CCMT
+        num_patches_per_modality: Patch-uri per modalitate
+        ccmt_depth: Depth CCMT
+        ccmt_heads: Attention heads
+        ccmt_mlp_dim: MLP dimension
+        ccmt_dropout: Dropout în layerele CCMT
+        device: Device pentru model
+    
+    Returns:
+        Model CCMT (fără backbones)
+    """
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    
+    print("\n" + "="*60)
+    print("LOADING CCMT-ONLY MODEL (No Backbones)")
+    print("="*60)
+    print(f"Device: {device}")
+    print(f"Input dims: text_en={text_en_dim}, text_es={text_es_dim}, audio={audio_dim}")
+    print(f"CCMT config: dim={ccmt_dim}, depth={ccmt_depth}, heads={ccmt_heads}, dropout={ccmt_dropout}")
+    
+    # Construiește modelul FĂRĂ backbones
+    model = MultimodalEmotionModel(
+        text_en_backbone=None,  # Nu încărcăm backbones
+        text_es_backbone=None,
+        audio_backbone=None,
+        text_en_dim=text_en_dim,
+        text_es_dim=text_es_dim,
+        audio_dim=audio_dim,
+        num_classes=num_classes,
+        ccmt_dim=ccmt_dim,
+        num_patches_per_modality=num_patches_per_modality,
+        ccmt_depth=ccmt_depth,
+        ccmt_heads=ccmt_heads,
+        ccmt_mlp_dim=ccmt_mlp_dim,
+        ccmt_dropout=ccmt_dropout,
+        freeze_backbones=False,  # Nu contează, nu avem backbones
+    )
+    
+    model = model.to(device)
+    model.print_parameter_summary()
+    
+    print("CCMT-only model loaded successfully!")
+    print("="*60 + "\n")
+    
+    return model
+
+
 if __name__ == '__main__':
     # Test full model
     print("Testing MultimodalEmotionModel...")

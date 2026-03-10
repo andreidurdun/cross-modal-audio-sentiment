@@ -30,6 +30,7 @@ from src.models.ccmt_layer import (
 from src.models.full_model import (
     MultimodalEmotionModel,
     load_full_multimodal_model,
+    load_ccmt_only_model,
 )
 
 __all__ = [
@@ -60,4 +61,5 @@ __all__ = [
     # Full model
     "MultimodalEmotionModel",
     "load_full_multimodal_model",
+    "load_ccmt_only_model",
 ]

@@ -3,6 +3,7 @@ import sys
 from typing import Optional
 import json
 from datetime import datetime
+import time
 
 import torch
 from torch import nn
@@ -10,15 +11,24 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import f1_score, accuracy_score, classification_report
+from sklearn.metrics import (
+    f1_score,
+    accuracy_score,
+    classification_report,
+    precision_score,
+    recall_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.models import load_full_multimodal_model
+from src.models import load_ccmt_only_model
 from src.data.dataset import MSP_Podcast_Dataset
 from scripts.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
+from transformers import get_linear_schedule_with_warmup
 
 
 class CCMTTrainer:
@@ -63,7 +73,7 @@ class CCMTTrainer:
             'batch_size': batch_size,
             'effective_batch_size': batch_size * gradient_accumulation_steps,
             'optimizer': 'AdamW',
-            'scheduler': 'ReduceLROnPlateau',
+            'scheduler': 'LinearWithWarmup',
             'loss_function': 'CrossEntropyLoss',
         }
         
@@ -83,11 +93,14 @@ class CCMTTrainer:
         )
         
         # Learning rate scheduler
-        self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        total_steps = len(train_loader) * num_epochs // gradient_accumulation_steps
+        warmup_steps = int(total_steps * 0.1)
+        self.total_steps = total_steps
+        self.warmup_steps = warmup_steps
+        self.scheduler = get_linear_schedule_with_warmup(
             self.optimizer,
-            mode='max',
-            factor=0.5,
-            patience=3,
+            num_warmup_steps=warmup_steps, # 10% din antrenament e încălzire
+            num_training_steps=total_steps
         )
         
         # Loss function: CrossEntropyLoss cu ponderi
@@ -98,6 +111,7 @@ class CCMTTrainer:
         # Early stopping
         self.early_stopping_patience = early_stopping_patience
         self.best_val_f1 = 0.0
+        self.best_epoch: Optional[int] = None
         self.patience_counter = 0
         
         # Training history
@@ -147,7 +161,7 @@ class CCMTTrainer:
             labels = batch['labels'].to(self.device, non_blocking=True)
             
             # Mixed precision context modern
-            with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=self.use_amp):
+            with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=self.use_amp):
                 # Forward pass
                 predictions = self.model(
                     text_en_emb=text_en_emb,
@@ -177,6 +191,8 @@ class CCMTTrainer:
                 else:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                     self.optimizer.step()
+
+                self.scheduler.step()
                 self.optimizer.zero_grad(set_to_none=True)
             
             # Metrics (folosește loss-ul nescalat pentru logging)
@@ -201,6 +217,8 @@ class CCMTTrainer:
             else:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
                 self.optimizer.step()
+            
+            self.scheduler.step()
             self.optimizer.zero_grad(set_to_none=True)
         
         epoch_loss = total_loss / len(self.train_loader)
@@ -232,7 +250,7 @@ class CCMTTrainer:
             labels = batch['labels'].to(self.device, non_blocking=True)
             
             # Mixed precision pentru inferență
-            with torch.cuda.amp.autocast(dtype=amp_dtype, enabled=self.use_amp):
+            with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=self.use_amp):
                 predictions = self.model(
                     text_en_emb=text_en_emb,
                     text_es_emb=text_es_emb,
@@ -263,6 +281,8 @@ class CCMTTrainer:
 
     def train(self):
         """Training loop complet."""
+        train_start_time = time.time()
+
         print(f"\n{'='*70}")
         print("STARTING TRAINING")
         print(f"{'='*70}\n")
@@ -288,10 +308,11 @@ class CCMTTrainer:
                   f"Acc: {val_metrics['accuracy']:.4f}, "
                   f"F1: {val_metrics['f1_macro']:.4f}")
             
-            self.scheduler.step(val_metrics['f1_macro'])
+            #self.scheduler.step(val_metrics['f1_macro'])
             
             if val_metrics['f1_macro'] > self.best_val_f1:
                 self.best_val_f1 = val_metrics['f1_macro']
+                self.best_epoch = epoch
                 self.patience_counter = 0
                 self.save_checkpoint(epoch, is_best=True)
                 print(f"✓ New best model! F1: {self.best_val_f1:.4f}")
@@ -311,11 +332,20 @@ class CCMTTrainer:
         
         self.load_best_checkpoint()
         test_metrics = self.evaluate(self.test_loader, desc="Testing")
+
+        train_time_minutes = (time.time() - train_start_time) / 60.0
+        test_metrics_full = self.compute_test_metrics(test_metrics)
+        self.save_test_metrics(test_metrics_full, train_time_minutes)
         
         print(f"\nTest Results:")
-        print(f"  Accuracy: {test_metrics['accuracy']:.4f}")
-        print(f"  F1 Macro: {test_metrics['f1_macro']:.4f}")
-        print(f"  Loss: {test_metrics['loss']:.4f}")
+        print(f"  Accuracy: {test_metrics_full['accuracy']:.4f}")
+        print(f"  F1 Macro: {test_metrics_full['f1_macro']:.4f}")
+        print(f"  F1 Weighted: {test_metrics_full['f1_weighted']:.4f}")
+        print(f"  Precision Macro: {test_metrics_full['precision_macro']:.4f}")
+        print(f"  Recall Macro: {test_metrics_full['recall_macro']:.4f}")
+        print(f"  Balanced Accuracy: {test_metrics_full['balanced_accuracy']:.4f}")
+        print(f"  Loss: {test_metrics_full['loss']:.4f}")
+        print(f"  Training Time: {train_time_minutes:.2f} minutes")
         
         print("\nClassification Report:")
         print(classification_report(
@@ -327,7 +357,7 @@ class CCMTTrainer:
         self.save_history()
         self.save_loss_plot()
         self.save_config()
-        return test_metrics
+        return test_metrics_full
 
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         checkpoint = {
@@ -336,6 +366,7 @@ class CCMTTrainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'best_val_f1': self.best_val_f1,
+            'best_epoch': self.best_epoch,
             'history': self.history,
         }
         if is_best:
@@ -351,9 +382,49 @@ class CCMTTrainer:
         if path.exists():
             checkpoint = torch.load(path, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.best_epoch = checkpoint.get('best_epoch', self.best_epoch)
             print(f"✓ Loaded best model from {path}")
         else:
             print(f"⚠ No checkpoint found at {path}")
+
+    def compute_test_metrics(self, test_metrics: dict) -> dict:
+        """Calculează set complet de metrici pe test pentru best model."""
+        y_true = test_metrics['labels']
+        y_pred = test_metrics['predictions']
+
+        return {
+            'loss': test_metrics['loss'],
+            'accuracy': accuracy_score(y_true, y_pred),
+            'balanced_accuracy': balanced_accuracy_score(y_true, y_pred),
+            'f1_macro': f1_score(y_true, y_pred, average='macro'),
+            'f1_weighted': f1_score(y_true, y_pred, average='weighted'),
+            'precision_macro': precision_score(y_true, y_pred, average='macro', zero_division=0),
+            'recall_macro': recall_score(y_true, y_pred, average='macro', zero_division=0),
+            'classification_report': classification_report(
+                y_true,
+                y_pred,
+                target_names=['unsatisfied', 'neutral', 'satisfied'],
+                output_dict=True,
+                zero_division=0,
+            ),
+            'confusion_matrix': confusion_matrix(y_true, y_pred).tolist(),
+            'num_samples': len(y_true),
+        }
+
+    def save_test_metrics(self, test_metrics: dict, train_time_minutes: float):
+        """Salvează metricile complete pe test pentru best model."""
+        payload = {
+            'timestamp': datetime.now().isoformat(),
+            'best_epoch': self.best_epoch,
+            'best_val_f1': self.best_val_f1,
+            'training_time_minutes': train_time_minutes,
+            'metrics': test_metrics,
+        }
+
+        path = self.checkpoint_dir / 'best_model_test_metrics.json'
+        with open(path, 'w') as f:
+            json.dump(payload, f, indent=2)
+        print(f"✓ Saved full test metrics to {path}")
 
     def save_history(self):
         path = self.checkpoint_dir / 'training_history.json'
@@ -392,10 +463,10 @@ class CCMTTrainer:
             'training_hyperparameters': self.hyperparameters,
             'model_architecture': self.model_config,
             'scheduler_config': {
-                'type': 'ReduceLROnPlateau',
-                'mode': 'max',
-                'factor': 0.5,
-                'patience': 3,
+                'type': 'LinearWithWarmup',
+                'num_warmup_steps': self.warmup_steps,
+                'num_training_steps': self.total_steps,
+                'warmup_ratio': 0.1,
             },
         }
         
@@ -407,9 +478,9 @@ class CCMTTrainer:
 def main():
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     # OPTIMIZARE: CCMT consumă extrem de puțină memorie, putem urca Batch Size masiv!
-    BATCH_SIZE = 32
-    GRADIENT_ACCUMULATION_STEPS = 4  # 64 este suficient, nu e nevoie de acumulare adițională aici
-    LEARNING_RATE = 1e-4
+    BATCH_SIZE = 128
+    GRADIENT_ACCUMULATION_STEPS = 1  
+    LEARNING_RATE = 2e-4
     NUM_EPOCHS = 50
     USE_AMP = True  # Mixed Precision Training
     USE_COMPILE = False  # torch.compile() (PyTorch 2.0+, dezactivat pt compatibilitate Windows)
@@ -437,31 +508,29 @@ def main():
     # Model configuration parameters
     model_config = {
         'num_classes': 3,
+        'text_en_dim': 768,  # Dimensiune embeddings din RoBERTa EN
+        'text_es_dim': 768,  # Dimensiune embeddings din RoBERTa ES
+        'audio_dim': 768,    # Dimensiune embeddings din WavLM
         'ccmt_dim': 768,
         'num_patches_per_modality': 100,
-        'ccmt_depth': 8,
-        'ccmt_heads': 8,
-        'ccmt_mlp_dim': 2048,
-        'freeze_backbones': True,
-        'projection_dim': None,
-        'text_en_checkpoint': 'checkpoints/roberta_text_en',
-        'text_es_checkpoint': 'checkpoints/roberta_text_es',
-        'audio_checkpoint': 'checkpoints/wavlm_audio',
+        'ccmt_depth': 4,
+        'ccmt_heads': 4,
+        'ccmt_mlp_dim': 1024,
+        'ccmt_dropout': 0.1,
     }
     
-    print("Loading model...")
-    model = load_full_multimodal_model(
-        text_en_checkpoint=model_config['text_en_checkpoint'],
-        text_es_checkpoint=model_config['text_es_checkpoint'],
-        audio_checkpoint=model_config['audio_checkpoint'],
+    print("Loading CCMT model (no backbones - using precomputed embeddings)...")
+    model = load_ccmt_only_model(
+        text_en_dim=model_config['text_en_dim'],
+        text_es_dim=model_config['text_es_dim'],
+        audio_dim=model_config['audio_dim'],
         num_classes=model_config['num_classes'],
         ccmt_dim=model_config['ccmt_dim'],
         num_patches_per_modality=model_config['num_patches_per_modality'],
         ccmt_depth=model_config['ccmt_depth'],
         ccmt_heads=model_config['ccmt_heads'],
         ccmt_mlp_dim=model_config['ccmt_mlp_dim'],
-        freeze_backbones=model_config['freeze_backbones'],
-        projection_dim=model_config['projection_dim'],
+        ccmt_dropout=model_config['ccmt_dropout'],
         device=DEVICE,
     )
     
@@ -483,8 +552,12 @@ def main():
         modalities=[], #ca sa nu incarcam datele reale
     )
     all_train_labels = class_weights_dataset.metadata['label_id'].astype(int).to_numpy()
-    class_weights = class_weights_dataset.get_class_weights(all_train_labels, device=DEVICE)
-    print(f"Class weights (Train): {class_weights.detach().cpu().tolist()}")
+    raw_weights = class_weights_dataset.get_class_weights(all_train_labels, device=DEVICE)
+    # 2. Aplicăm NETEZIRE cu Radical (Square Root)
+    class_weights = torch.sqrt(raw_weights)
+    print(f"Smoothed Class weights (Train): {class_weights.detach().cpu().tolist()}")
+
+    #class_weights = None
     
     # Încarcă embeddingurile precalculate
     embeddings_dir = PROJECT_ROOT / "MSP_Podcast" / "embeddings"
@@ -513,7 +586,7 @@ def main():
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=4,
+        num_workers=1,
         pin_memory=True if DEVICE == "cuda" else False
     )
     
@@ -521,7 +594,7 @@ def main():
         val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
         pin_memory=True if DEVICE == "cuda" else False
     )
     
@@ -529,7 +602,7 @@ def main():
         test_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=1,
         pin_memory=True if DEVICE == "cuda" else False
     )
     
@@ -548,7 +621,7 @@ def main():
         weight_decay=0.01,
         num_epochs=NUM_EPOCHS,
         checkpoint_dir=Path("checkpoints/ccmt_multimodal"),
-        early_stopping_patience=7,
+        early_stopping_patience=5,
         gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
         use_amp=USE_AMP,
         class_weights=class_weights,
