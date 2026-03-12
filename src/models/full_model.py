@@ -349,7 +349,7 @@ def load_full_multimodal_model(
     model = model.to(device)
     model.print_parameter_summary()
     
-    print("✅ Full model loaded successfully!")
+    print("Full model loaded successfully!")
     print("="*60 + "\n")
     
     return model

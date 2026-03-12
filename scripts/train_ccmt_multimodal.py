@@ -480,7 +480,7 @@ def main():
     # OPTIMIZARE: CCMT consumă extrem de puțină memorie, putem urca Batch Size masiv!
     BATCH_SIZE = 128
     GRADIENT_ACCUMULATION_STEPS = 1  
-    LEARNING_RATE = 2e-4
+    LEARNING_RATE = 1e-4
     NUM_EPOCHS = 50
     USE_AMP = True  # Mixed Precision Training
     USE_COMPILE = False  # torch.compile() (PyTorch 2.0+, dezactivat pt compatibilitate Windows)
@@ -621,7 +621,7 @@ def main():
         weight_decay=0.01,
         num_epochs=NUM_EPOCHS,
         checkpoint_dir=Path("checkpoints/ccmt_multimodal"),
-        early_stopping_patience=5,
+        early_stopping_patience=7,
         gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
         use_amp=USE_AMP,
         class_weights=class_weights,
