@@ -90,8 +90,9 @@ class CascadedCrossModalTransformer(nn.Module):
         self.pos_embedding_text_en = nn.Parameter(torch.randn(1, self.ppm, dim))
         self.pos_embedding_audio = nn.Parameter(torch.randn(1, self.ppm, dim))
 
-        self.cross_tr_language = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
-        self.cross_tr_speech = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.cross_tr_text_en_audio = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.cross_tr_text_es_audio = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.cross_tr_branches = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
 
         self.mlp_head = nn.Sequential(
             nn.LayerNorm(dim),
@@ -104,8 +105,9 @@ class CascadedCrossModalTransformer(nn.Module):
         text2_tokens = x[:, self.ppm:2*self.ppm] + self.pos_embedding_text_en
         audio_tokens = x[:, 2*self.ppm:] + self.pos_embedding_audio
 
-        tokens_text_cross = self.cross_tr_language(text1_tokens, text2_tokens)
-        tokens_cross = self.cross_tr_speech(tokens_text_cross, audio_tokens)
+        tokens_en_audio = self.cross_tr_text_en_audio(text1_tokens, audio_tokens)
+        tokens_es_audio = self.cross_tr_text_es_audio(text2_tokens, audio_tokens)
+        tokens_cross = self.cross_tr_branches(tokens_en_audio, tokens_es_audio)
 
         x = tokens_cross[:, 0]
         return self.mlp_head(x)
