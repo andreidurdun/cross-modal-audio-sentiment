@@ -372,6 +372,110 @@ class EmbeddingExtractor:
         print(f"Total partitions processed: {len(results)}")
         print("="*80 + "\n")
 
+    def add_german_embeddings(
+        self,
+        partition: str,
+        checkpoint_path: str = "checkpoints/roberta_text_de",
+        lang_key: str = "text_de"
+    ):
+        """
+        Adaugă embeddings pentru limba germană într-un fișier .pt deja existent,
+        fără a recalcula audio sau engleză.
+        """
+        existing_file = self.output_dir / f"embeddings_{partition}.pt"
+        if not existing_file.exists():
+            raise FileNotFoundError(f"Nu există fișierul de bază: {existing_file}. Rulează extragerea inițială mai întâi.")
+            
+        print(f"\n{'='*80}")
+        print(f"ADDING {lang_key.upper()} EMBEDDINGS TO: {partition.upper()}")
+        print(f"{'='*80}")
+        
+        # 1. Încărcăm fișierul existent
+        print("Încărcăm embedding-urile existente...")
+        embeddings_dict = torch.load(existing_file)
+        
+        if lang_key in embeddings_dict:
+            print(f"Atenție: Cheia '{lang_key}' există deja în fișier. Va fi suprascrisă.")
+            
+        # 2. Încărcăm DOAR backbone-ul de germană
+        print(f"Încărcăm modelul pentru {lang_key} din {checkpoint_path}...")
+        # Aici presupun că folosești funcția ta load_all_backbones sau încarci direct modelul
+        # Adaptare folosind funcția ta existentă sau direct din transformers:
+        try:
+            from transformers import AutoModel
+            from peft import PeftModel
+            # Pasul A: Încărcăm modelul de bază GBERT
+            base_model_name = "deepset/gbert-base"  # Fundația folosită la antrenament
+            print(f"Încărcăm modelul de bază: {base_model_name}...")
+            base_model = AutoModel.from_pretrained(base_model_name)
+            # Pasul B: Aplicăm greutățile tale antrenate peste el
+            print(f"Atașăm adaptoarele LoRA din: {checkpoint_path}...")
+            de_backbone = PeftModel.from_pretrained(base_model, checkpoint_path)
+            # Mutăm pe placa video
+            de_backbone = de_backbone.to(self.device).eval()
+        except Exception as e:
+            print(f"Eroare la încărcarea modelului PEFT: {e}")
+            return
+
+        # 3. Pregătim datasetul doar pentru germană
+        data_dir = self.dataset_root
+        labels_csv = data_dir / "Labels" / "labels_consensus.csv"
+        transcripts_de_json = data_dir / "Transcription_de.json"
+        
+        partition_map = {"train": "Train", "val": "Development", "dev": "Development", "test1": "Test1", "test2": "Test2"}
+        dataset_partition = partition_map.get(partition.lower(), partition)
+        
+        # Workaround: folosim 'text_en' ca modalities și transcripts_en_json pentru germană
+        dataset = MSP_Podcast_Dataset(
+            audio_root=str(data_dir / "Audios"),
+            labels_csv=str(labels_csv),
+            transcripts_en_json=str(transcripts_de_json),
+            partition=dataset_partition,
+            modalities=["text_en"],
+        )
+        # Vom extrage din sample["text_en"] dar vom salva ca text_de
+        
+        # 4. Verificare de siguranță a ordinii și numărului de sample-uri
+        assert len(dataset) == len(embeddings_dict['labels']), \
+            "Numărul de sample-uri din datasetul curent nu corespunde cu fișierul existent!"
+            
+        all_de_embeddings = []
+        num_batches = (len(dataset) + self.batch_size - 1) // self.batch_size
+        
+        # 5. Extragerea efectivă
+        with torch.no_grad():
+            for batch_idx in tqdm(range(num_batches), desc=f"Processing {lang_key} for {partition}"):
+                start_idx = batch_idx * self.batch_size
+                end_idx = min(start_idx + self.batch_size, len(dataset))
+                
+                batch_texts_de = [dataset[idx]["text_en"] for idx in range(start_idx, end_idx)]
+                
+                # În funcție de cum e implementat backbone-ul tău (dacă primește listă de stringuri sau tokeni):
+                # Presupunem că folosești tokenizare în interiorul backbone-ului (ca la celelalte)
+                # Dacă folosești AutoModel direct, trebuie să și tokenizezi aici:
+                from transformers import AutoTokenizer
+                tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+                inputs = tokenizer(batch_texts_de, padding=True, truncation=True, max_length=128, return_tensors="pt").to(self.device)
+                outputs = de_backbone(**inputs)
+                
+                # Extragem hidden states (last hidden state)
+                text_de_emb = outputs.last_hidden_state
+                
+                # Aplicăm aceeași regulă de pad/truncate la 100
+                text_de_emb = self._pad_or_truncate(text_de_emb, target_len=100).cpu()
+                all_de_embeddings.append(text_de_emb)
+                
+        # 6. Salvare înapoi în dicționarul principal
+        embeddings_dict[lang_key] = torch.cat(all_de_embeddings, dim=0)
+        
+        # Actualizare metadata
+        embeddings_dict['metadata']['embedding_dims'][lang_key] = embeddings_dict[lang_key].shape[-1]
+        embeddings_dict['metadata'][f'extraction_date_{lang_key}'] = datetime.now().isoformat()
+        
+        print(f"\nSalvare fișier actualizat: {existing_file}")
+        torch.save(embeddings_dict, existing_file)
+        print(f"✓ Gata! Forma {lang_key}: {embeddings_dict[lang_key].shape}")
+
 
 class EmbeddingLoader:
     """Utilitar pentru încărcarea embedding-urilor salvate."""
@@ -409,14 +513,55 @@ class EmbeddingLoader:
         
         return all_embeddings
 
+def update_embeddings_with_val_arousal():
+    """
+    Adaugă valorile valence (EmoVal) și arousal (EmoAct) din labels_consensus.json
+    în embeddings_train.pt și embeddings_val.pt, fără a regenera embeddingurile.
+    """
+    import torch
+    import json
+    from pathlib import Path
+
+    def add_val_arousal(embeddings_path, labels_json_path):
+        print(f"Processing {embeddings_path} ...")
+        data = torch.load(embeddings_path, map_location='cpu')
+        with open(labels_json_path, 'r') as f:
+            labels = json.load(f)
+
+        file_ids = data['file_ids']
+        valence = []
+        arousal = []
+        for file_id in file_ids:
+            key = file_id
+            if key not in labels and not key.endswith('.wav'):
+                key = key + '.wav'
+            if key not in labels:
+                raise KeyError(f"Nu am găsit {file_id} în labels_consensus.json")
+            valence.append(labels[key]['EmoVal'])
+            arousal.append(labels[key]['EmoAct'])
+
+        data['valence'] = torch.tensor(valence, dtype=torch.float32)
+        data['arousal'] = torch.tensor(arousal, dtype=torch.float32)
+        torch.save(data, embeddings_path)
+        print(f"✓ Updated {embeddings_path} with valence/arousal.")
+
+    base = Path('MSP_Podcast/embeddings')
+    labels_json = Path('MSP_Podcast/Labels/labels_consensus.json')
+    add_val_arousal(base / 'embeddings_train.pt', labels_json)
+    add_val_arousal(base / 'embeddings_val.pt', labels_json)
 
 def main():
     parser = argparse.ArgumentParser(description="Extract and save embeddings from backbones")
     parser.add_argument(
+        '--add-val-arousal',
+        action='store_true',
+        help='Adaugă valence/arousal din labels_consensus.json în embeddings_train.pt și embeddings_val.pt (fără a regenera embeddingurile) și oprește scriptul.'
+    )
+    parser.add_argument(
         '--partition',
         type=str,
         default='train, val',
-        help='Partition to process (default: all). Supports comma-separated values.',
+        help='Partition to process (default: train, val). Supports comma-separated values.',
     )
     parser.add_argument(
         '--output-dir',
@@ -447,6 +592,17 @@ def main():
         default='cuda' if torch.cuda.is_available() else 'cpu',
         help='Device to use (default: cuda if available)',
     )
+    parser.add_argument(
+        '--add-german-only',
+        action='store_true',
+        help='Sari peste extragerea de baza si doar adauga embeddings in germana in fisierele existente.',
+    )
+    parser.add_argument(
+        '--de-checkpoint',
+        type=str,
+        default='checkpoints/roberta_text_de/best_model',
+        help='Calea catre checkpoint-ul pentru limba germana',
+    )
     
     args = parser.parse_args()
     
@@ -462,8 +618,16 @@ def main():
     print(f"Projection dim: {projection_dim}")
     print(f"Device: {args.device}")
     print(f"Save individually: {args.save_individually}")
+    print(f"Add German Only: {args.add_german_only}")
     print("="*80 + "\n")
     
+
+    # Dacă se cere doar adăugarea valence/arousal, rulează utilitarul și oprește
+    if args.add_val_arousal:
+        update_embeddings_with_val_arousal()
+        print("\nValence/arousal adăugate cu succes în embeddings_train.pt și embeddings_val.pt!\n")
+        return
+
     # Create extractor
     extractor = EmbeddingExtractor(
         output_dir=args.output_dir,
@@ -471,28 +635,52 @@ def main():
         device=args.device,
         batch_size=args.batch_size,
     )
-    
-    # Extract embeddings
+
+    # Extract embeddings logic
     allowed_partitions = {'train', 'val', 'test1', 'test2', 'dev', 'all'}
-    if args.partition == 'all':
-        extractor.extract_all_partitions(save_individually=args.save_individually)
-    else:
-        partitions = [p.strip() for p in args.partition.split(',') if p.strip()]
-        invalid = [p for p in partitions if p not in allowed_partitions]
-        if invalid:
-            raise ValueError(
-                f"Invalid partition(s): {', '.join(invalid)}. "
-                f"Allowed: {sorted(allowed_partitions)}"
-            )
+    
+    if args.add_german_only:
+        # LOGICA PENTRU ADĂUGAREA EXCLUSIVĂ A EMBEDDING-URILOR ÎN GERMANĂ
+        if args.partition == 'all':
+            partitions = ['train', 'val', 'test1']
+        else:
+            partitions = [p.strip() for p in args.partition.split(',') if p.strip()]
+            invalid = [p for p in partitions if p not in allowed_partitions]
+            if invalid:
+                raise ValueError(
+                    f"Invalid partition(s): {', '.join(invalid)}. "
+                    f"Allowed: {sorted(allowed_partitions)}"
+                )
+                
         for partition in partitions:
-            extractor.extract_embeddings_for_partition(
+            extractor.add_german_embeddings(
                 partition=partition,
-                save_individually=args.save_individually,
+                checkpoint_path=args.de_checkpoint,
+                lang_key='text_de'
             )
+            
+    else:
+        # LOGICA ORIGINALĂ PENTRU EXTRAGEREA COMPLETĂ (Audio + EN + ES)
+        if args.partition == 'all':
+            extractor.extract_all_partitions(save_individually=args.save_individually)
+        else:
+            partitions = [p.strip() for p in args.partition.split(',') if p.strip()]
+            invalid = [p for p in partitions if p not in allowed_partitions]
+            if invalid:
+                raise ValueError(
+                    f"Invalid partition(s): {', '.join(invalid)}. "
+                    f"Allowed: {sorted(allowed_partitions)}"
+                )
+            for partition in partitions:
+                extractor.extract_embeddings_for_partition(
+                    partition=partition,
+                    save_individually=args.save_individually,
+                )
     
     print("\nEmbedding extraction completed successfully!")
     print(f" Embeddings saved to: {args.output_dir}\n")
 
-
 if __name__ == "__main__":
     main()
+
+

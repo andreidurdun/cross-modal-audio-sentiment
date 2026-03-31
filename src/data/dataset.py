@@ -39,7 +39,6 @@ class MSP_Podcast_Dataset(Dataset):
         partition='Train',
         target_sample_rate=16000,
         audio_processor: AudioProcessor | None = None,
-        apply_telephony_aug: bool = False,
         modalities: list[Literal['audio', 'text_en', 'text_es']] | None = None,
     ):
         super().__init__()
@@ -83,8 +82,7 @@ class MSP_Podcast_Dataset(Dataset):
         #configurare Audio Processor
         if 'audio' in self.modalities:
             processor_config = AudioProcessorConfig(
-                target_sample_rate=target_sample_rate,
-                apply_telephony_augmentation=apply_telephony_aug and partition == 'Train'
+                target_sample_rate=target_sample_rate
             )
             self.audio_processor = audio_processor or AudioProcessor(processor_config)
         else:
@@ -273,14 +271,37 @@ def main():
         modalities=['text_en'],
     )
 
-    label_counts = (
+    val_dataset_msp = MSP_Podcast_Dataset(
+        audio_root=str(data_dir / 'Audios'),
+        labels_csv=str(data_dir / 'Labels' / 'labels_consensus.csv'),
+        transcripts_en_json=str(data_dir / 'Transcription_en.json'),
+        partition="Development",
+        modalities=['text_en'],
+    )
+
+
+    # Numar total exemple
+    print(f"\nNumar total exemple (Train): {len(train_dataset_msp)}")
+    print(f"Numar total exemple (Val): {len(val_dataset_msp)}")
+
+    # Numar exemple per clasa (Train)
+    train_label_counts = (
         train_dataset_msp.metadata['target_label']
         .value_counts()
         .reindex(['unsatisfied', 'neutral', 'satisfied'], fill_value=0)
     )
-
     print("\nNumar exemple per label (Train):")
-    for label_name, count in label_counts.items():
+    for label_name, count in train_label_counts.items():
+        print(f"  - {label_name}: {count}")
+
+    # Numar exemple per clasa (Val)
+    val_label_counts = (
+        val_dataset_msp.metadata['target_label']
+        .value_counts()
+        .reindex(['unsatisfied', 'neutral', 'satisfied'], fill_value=0)
+    )
+    print("\nNumar exemple per label (Val):")
+    for label_name, count in val_label_counts.items():
         print(f"  - {label_name}: {count}")
 
     class_weights = train_dataset_msp.get_class_weights(

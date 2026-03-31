@@ -81,7 +81,7 @@ class Transformer(nn.Module):
 
 
 class CascadedCrossModalTransformer(nn.Module):
-    def __init__(self, num_classes, num_patches, dim, depth, heads, mlp_dim, dim_head=64, dropout=0.20):
+    def __init__(self, num_outputs, num_patches, dim, depth, heads, mlp_dim, dim_head=64, dropout=0.20, regression=False):
         super().__init__()
         assert num_patches % 3 == 0, "The number of patched must be equal for all modalities!"
         self.ppm = num_patches // 3  # Number of patches per modality
@@ -94,11 +94,18 @@ class CascadedCrossModalTransformer(nn.Module):
         self.cross_tr_text_es_audio = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
         self.cross_tr_branches = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
 
-        self.mlp_head = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, num_classes),
-            nn.Sigmoid()
-        )
+        self.regression = regression
+        if not regression:
+            self.mlp_head = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, num_outputs),
+                nn.Softmax(dim=-1)
+            )
+        else:
+            self.mlp_head = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, num_outputs)
+            )
 
     def forward(self, x):
         text1_tokens = x[:, :self.ppm] + self.pos_embedding_text
@@ -110,7 +117,8 @@ class CascadedCrossModalTransformer(nn.Module):
         tokens_cross = self.cross_tr_branches(tokens_en_audio, tokens_es_audio)
 
         x = tokens_cross[:, 0]
-        return self.mlp_head(x)
+        out = self.mlp_head(x)
+        return out
 
 
 if __name__ == '__main__':

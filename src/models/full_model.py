@@ -72,6 +72,7 @@ class MultimodalEmotionModel(nn.Module):
         
         # Training settings
         freeze_backbones: bool = True,
+        regression: bool = False,
     ):
         """
         Args:
@@ -118,7 +119,7 @@ class MultimodalEmotionModel(nn.Module):
         # CCMT - cross-modal transformer pentru fusion și predicție
         total_patches = num_patches_per_modality * 3
         self.ccmt = CascadedCrossModalTransformer(
-            num_classes=num_classes,
+            num_outputs=num_classes,
             num_patches=total_patches,
             dim=ccmt_dim,
             depth=ccmt_depth,
@@ -126,8 +127,8 @@ class MultimodalEmotionModel(nn.Module):
             mlp_dim=ccmt_mlp_dim,
             dim_head=ccmt_dim_head,
             dropout=ccmt_dropout,
+            regression=regression,
         )
-        
         self.num_classes = num_classes
         self.num_patches_per_modality = num_patches_per_modality
 

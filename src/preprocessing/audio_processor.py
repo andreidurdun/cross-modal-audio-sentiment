@@ -12,7 +12,6 @@ import soundfile as sf
 class AudioProcessorConfig:
     target_sample_rate: int = 16_000
     force_mono: bool = True
-    apply_telephony_augmentation: bool = False
 
 
 class AudioProcessor:
@@ -39,15 +38,9 @@ class AudioProcessor:
 
         waveform = self._resample(waveform, sample_rate)
 
-        if self.config.apply_telephony_augmentation:
-            waveform = self.telephony_augmentation(waveform)
 
         return waveform.squeeze(0)
 
-    def telephony_augmentation(self, waveform: torch.Tensor) -> torch.Tensor:
-        degraded = self._downsampler(waveform)
-        restored = self._upsampler(degraded)
-        return restored
 
     def _resample(self, waveform: torch.Tensor, sample_rate: int) -> torch.Tensor:
         if sample_rate == self.config.target_sample_rate:
