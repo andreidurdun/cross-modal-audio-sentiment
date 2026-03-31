@@ -112,17 +112,15 @@ class CascadedCrossModalTransformer(nn.Module):
         text2_tokens = x[:, self.ppm:2*self.ppm] + self.pos_embedding_text_en
         audio_tokens = x[:, 2*self.ppm:] + self.pos_embedding_audio
 
-        tokens_en_audio = self.cross_tr_text_en_audio(text1_tokens, audio_tokens)
-        tokens_es_audio = self.cross_tr_text_es_audio(text2_tokens, audio_tokens)
-        tokens_cross = self.cross_tr_branches(tokens_en_audio, tokens_es_audio)
+        tokens_text_cross = self.cross_tr_language(text1_tokens, text2_tokens)
+        tokens_cross = self.cross_tr_speech(tokens_text_cross, audio_tokens)
 
         x = tokens_cross[:, 0]
-        out = self.mlp_head(x)
-        return out
+        return self.mlp_head(x)
 
 
 if __name__ == '__main__':
     # Usage example
-    model = CascadedCrossModalTransformer(num_classes=3, num_patches=300, dim=1024, depth=6, heads=6, mlp_dim=128)
+    model = CascadedCrossModalTransformer(num_outputs=3, num_patches=300, dim=1024, depth=6, heads=6, mlp_dim=128)
     result = model(torch.zeros((10, 300, 1024)))  # batch x tokens x dim_token
     print(result.shape)
