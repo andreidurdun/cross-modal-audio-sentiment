@@ -90,9 +90,9 @@ class CascadedCrossModalTransformer(nn.Module):
         self.pos_embedding_text_en = nn.Parameter(torch.randn(1, self.ppm, dim))
         self.pos_embedding_audio = nn.Parameter(torch.randn(1, self.ppm, dim))
 
-        self.cross_tr_text_en_audio = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
-        self.cross_tr_text_es_audio = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
-        self.cross_tr_branches = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.cross_tr_language = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.cross_tr_speech = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+
 
         self.regression = regression
         if not regression:
