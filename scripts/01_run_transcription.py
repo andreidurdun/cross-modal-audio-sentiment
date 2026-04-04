@@ -7,9 +7,12 @@ import sys
 from typing import Dict, Sequence
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
+
+PROJECT_ROOT = project_root()
 
 from src.preprocessing.transcriber import AudioTranscriber
 from src.utils.helpers import set_seed

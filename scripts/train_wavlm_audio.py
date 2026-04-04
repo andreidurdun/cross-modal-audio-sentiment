@@ -12,14 +12,17 @@ import time
 import matplotlib.pyplot as plt
 import warnings
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
+
+PROJECT_ROOT = project_root()
 
 warnings.filterwarnings("ignore")
 warnings.filterwarnings("ignore", message=".*use_reentrant parameter should be passed explicitly.*")
 
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForAudioClassification, 
     AutoFeatureExtractor,
@@ -33,65 +36,8 @@ from peft import (
 from tqdm.auto import tqdm
 
 from src.data.dataset import MSP_Podcast_Dataset
-
-class AudioWaveLMDataset(Dataset):
-    def __init__(self, msp_dataset: MSP_Podcast_Dataset, feature_extractor):
-        self.msp_dataset = msp_dataset
-        self.feature_extractor = feature_extractor
-        self.sample_rate = 16000
-
-    def __len__(self):
-        return len(self.msp_dataset)
-
-    def __getitem__(self, idx):
-        sample = self.msp_dataset[idx]
-        audio = sample['audio'].numpy() if isinstance(sample['audio'], torch.Tensor) else sample['audio']
-        
-        
-        if np.isnan(audio).any() or np.isinf(audio).any():
-            print(f"[WARN] NaN or Inf values found in audio sample at index {idx}. Replacing with zeros.")
-            audio = np.zeros_like(audio)
-
-        #trunchiere la 5 secunde
-        MAX_SECONDS = 5 
-        max_samples = self.sample_rate * MAX_SECONDS
-        
-        if audio.shape[-1] > max_samples:
-            audio = audio[..., :max_samples]
-        
-        inputs = self.feature_extractor(
-            audio,
-            sampling_rate=self.sample_rate,
-            return_tensors="pt",
-        )
-        
-        return {
-            'input_values': inputs['input_values'].squeeze(0),
-            'labels': torch.tensor(sample['label'], dtype=torch.long),
-        }
-
-class AudioCollator:
-    def __call__(self, batch):
-        input_features = [sample['input_values'] for sample in batch]
-        labels = torch.stack([sample['labels'] for sample in batch])
-        
-        batch_size = len(input_features)
-        max_length = max(feature.shape[-1] for feature in input_features)
-        
-        #generam tensori pentru input si masca de atentie (padding dinamic pe batch)
-        padded_inputs = torch.zeros((batch_size, max_length), dtype=torch.float32)
-        attention_mask = torch.zeros((batch_size, max_length), dtype=torch.long)
-        
-        for i, feature in enumerate(input_features):
-            seq_len = feature.shape[-1]
-            padded_inputs[i, :seq_len] = feature
-            attention_mask[i, :seq_len] = 1 # 1 pentru audio real, 0 pentru padding
-            
-        return {
-            'input_values': padded_inputs,
-            'attention_mask': attention_mask,
-            'labels': labels
-        }
+from src.data.audio_datasets import AudioWaveLMDataset, AudioCollator
+from src.utils.config import get_training_config
 
 class AudioTrainerWavLM:
     def __init__(self, model_name: str = "microsoft/wavlm-base-plus", num_labels: int = 3, device: Optional[str] = None):
@@ -507,6 +453,11 @@ class AudioTrainerWavLM:
             print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f} | Test F1 Macro: {test_f1:.4f}")
 
 def main():
+    train_config = get_training_config(
+        "wavlm_audio",
+        PROJECT_ROOT / "configs" / "training_config.json",
+    )
+
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
     checkpoint_dir = Path("checkpoints/wavlm_audio")
@@ -540,8 +491,22 @@ def main():
 
     feature_extractor = AutoFeatureExtractor.from_pretrained("microsoft/wavlm-base-plus")
     
-    train_dataset = AudioWaveLMDataset(train_dataset_msp, feature_extractor)
-    val_dataset = AudioWaveLMDataset(val_dataset_msp, feature_extractor)
+    train_dataset = AudioWaveLMDataset(
+        train_dataset_msp,
+        feature_extractor,
+        max_seconds=5,
+        do_resample=False,
+        label_key="label",
+        include_attention_mask=False,
+    )
+    val_dataset = AudioWaveLMDataset(
+        val_dataset_msp,
+        feature_extractor,
+        max_seconds=5,
+        do_resample=False,
+        label_key="label",
+        include_attention_mask=False,
+    )
     
     trainer = AudioTrainerWavLM()
     trainer.train(
@@ -549,13 +514,13 @@ def main():
         val_dataset=val_dataset,
         test_dataset=None,
         checkpoint_dir=checkpoint_dir,
-        num_epochs=5,                   # Redus pentru testare rapidă
-        batch_size=16,                  # Crescut (avem VRAM disponibil fără checkpointing)
-        gradient_accumulation_steps=2,  # Redus
-        learning_rate=3e-4,            
-        lora_r=8,                       # Redus pentru mai putini parametri
-        lora_alpha=16,                  # Redus proportional
-        use_amp=True,
+        num_epochs=int(train_config["num_epochs"]),
+        batch_size=int(train_config["batch_size"]),
+        gradient_accumulation_steps=int(train_config["gradient_accumulation_steps"]),
+        learning_rate=float(train_config["learning_rate"]),
+        lora_r=int(train_config["lora_r"]),
+        lora_alpha=int(train_config["lora_alpha"]),
+        use_amp=bool(train_config["use_amp"]),
         class_weights=train_dataset_msp.get_class_weights(
             all_train_labels=train_dataset_msp.metadata['label_id'].values,
             device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")

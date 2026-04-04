@@ -5,6 +5,7 @@ Evaluează pe datele de validare și salvează scorurile și graficele.
 from pathlib import Path
 from typing import Optional
 import json
+import argparse
 
 import torch
 import sys
@@ -17,21 +18,62 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
+
+PROJECT_ROOT = project_root()
 
 from torch.utils.data import DataLoader
 
-from src.models import load_full_multimodal_model
-from scripts.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
+from src.models import load_ccmt_only_model
+from src.data.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
+
+
+SUPPORTED_MODALITIES = ["text_en", "text_es", "text_de", "text_fr", "audio"]
+
+
+def parse_modalities(modalities_arg: Optional[str]) -> list[str]:
+    if not modalities_arg:
+        return ["text_en", "text_es", "audio"]
+
+    modalities = [item.strip() for item in modalities_arg.split(",") if item.strip()]
+    invalid_modalities = [item for item in modalities if item not in SUPPORTED_MODALITIES]
+    if invalid_modalities:
+        raise ValueError(
+            f"Modalitati invalide: {invalid_modalities}. Alege dintre {SUPPORTED_MODALITIES}"
+        )
+    return modalities
+
+
+def build_modality_suffix(modalities: list[str]) -> str:
+    return "_".join(modalities)
+
+
+def resolve_embeddings_dir(embeddings_dir_arg: Optional[str], modalities: list[str]) -> Path:
+    if embeddings_dir_arg:
+        return Path(embeddings_dir_arg)
+
+    if modalities == ["text_en", "text_es", "audio"]:
+        return PROJECT_ROOT / "MSP_Podcast" / "embeddings"
+
+    return PROJECT_ROOT / "MSP_Podcast" / f"embeddings_{build_modality_suffix(modalities)}"
+
+
+def collect_embedding_inputs(batch: dict, modalities: list[str], device: str) -> dict[str, torch.Tensor]:
+    return {
+        f"{modality}_emb": batch[f"{modality}_emb"].to(device)
+        for modality in modalities
+    }
 
 
 class CCMTTester:
     """Tester pentru modelul CCMT Multimodal."""
 
-    def __init__(self, device: Optional[str] = None):
+    def __init__(self, modalities: list[str], device: Optional[str] = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.modalities = modalities
         self.num_labels = 3
         self.id2label = {0: "unsatisfied", 1: "neutral", 2: "satisfied"}
         self.label2id = {v: k for k, v in self.id2label.items()}
@@ -49,20 +91,11 @@ class CCMTTester:
         
         progress_bar = tqdm(val_loader, desc="Evaluating")
         for batch in progress_bar:
-            # Unpack batch
-            audio_embeddings = batch['audio_embeddings'].to(self.device)
-            text_en_embeddings = batch['text_en_embeddings'].to(self.device)
-            text_es_embeddings = batch['text_es_embeddings'].to(self.device)
+            embedding_inputs = collect_embedding_inputs(batch, self.modalities, self.device)
             labels = batch['labels'].to(self.device)
             
             # Forward pass
-            outputs = model(
-                audio_embeddings=audio_embeddings,
-                text_en_embeddings=text_en_embeddings,
-                text_es_embeddings=text_es_embeddings,
-            )
-            
-            logits = outputs['logits']
+            logits = model(**embedding_inputs)
             loss = loss_fn(logits, labels)
             total_loss += loss.item()
             
@@ -179,6 +212,7 @@ class CCMTTester:
         self,
         val_dataset,
         checkpoint_dir: Path,
+        model_config: dict,
         batch_size: int = 32,
         output_dir: Path = Path("results/ccmt_multimodal"),
     ):
@@ -196,11 +230,21 @@ class CCMTTester:
             raise FileNotFoundError(f"Checkpoint directory not found at: {checkpoint_dir}")
         
         print(f"\nLoading model from: {checkpoint_dir}")
-        model = load_full_multimodal_model(
+        model = load_ccmt_only_model(
             device=self.device,
-            text_en_checkpoint=None,
-            text_es_checkpoint=None,
-            audio_checkpoint=None,
+            text_en_dim=model_config.get('text_en_dim', 768),
+            text_es_dim=model_config.get('text_es_dim', 768),
+            text_de_dim=model_config.get('text_de_dim', 768),
+            text_fr_dim=model_config.get('text_fr_dim', 768),
+            audio_dim=model_config.get('audio_dim', 768),
+            num_classes=model_config.get('num_classes', 3),
+            ccmt_dim=model_config.get('ccmt_dim', 768),
+            num_patches_per_modality=model_config.get('num_patches_per_modality', 100),
+            ccmt_depth=model_config.get('ccmt_depth', 4),
+            ccmt_heads=model_config.get('ccmt_heads', 4),
+            ccmt_mlp_dim=model_config.get('ccmt_mlp_dim', 1024),
+            ccmt_dropout=model_config.get('ccmt_dropout', 0.1),
+            modalities=self.modalities,
         )
         
         # Load CCMT weights
@@ -257,11 +301,47 @@ class CCMTTester:
 
 def main():
     """Main testing function."""
+    parser = argparse.ArgumentParser(description="Test CCMT multimodal checkpoints")
+    parser.add_argument(
+        "--modalities",
+        type=str,
+        default=None,
+        help="Lista de modalitati separate prin virgula. Daca lipseste, se citeste din training_config.json sau se foloseste text_en,text_es,audio.",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=None,
+        help="Directorul checkpoint-ului CCMT de evaluat.",
+    )
+    parser.add_argument(
+        "--embeddings-dir",
+        type=str,
+        default=None,
+        help="Directorul cu embeddings precompute. Implicit: MSP_Podcast/embeddings pentru text_en,text_es,audio, altfel MSP_Podcast/embeddings_<modalitati>",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Director pentru rezultate.",
+    )
+    args = parser.parse_args()
     
     # Paths
-    checkpoint_dir = Path("checkpoints/ccmt_multimodal")
-    embeddings_dir = Path("MSP_Podcast/embeddings")
-    output_dir = Path("results/ccmt_multimodal")
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else Path("checkpoints/ccmt_multimodal")
+
+    training_config_path = checkpoint_dir / "training_config.json"
+    saved_model_config = {}
+    if training_config_path.exists():
+        with open(training_config_path, "r") as file_handle:
+            saved_config = json.load(file_handle)
+        saved_model_config = saved_config.get("model_architecture", {})
+
+    modalities = parse_modalities(args.modalities) if args.modalities else saved_model_config.get("modalities", ["text_en", "text_es", "audio"])
+    modality_suffix = build_modality_suffix(modalities)
+    embeddings_dir = resolve_embeddings_dir(args.embeddings_dir, modalities)
+    output_dir = Path(args.output_dir) if args.output_dir else Path("results") / f"ccmt_multimodal_{modality_suffix}"
     
     # Verify files
     if not embeddings_dir.exists():
@@ -270,24 +350,27 @@ def main():
     print("="*80)
     print("Loading Precomputed Embeddings for Multimodal Model")
     print("="*80)
+    print(f"Embeddings dir: {embeddings_dir}")
     
     # Load validation dataset
     print("\nLoading Validation dataset...")
     val_dataset = PrecomputedEmbeddingsDataset(
         embeddings_dir=str(embeddings_dir),
         partition="val",
+        modalities=modalities,
     )
     
     print(f"✅ Data loaded successfully!")
     print(f"   Val: {len(val_dataset)} samples\n")
     
     # Create tester
-    tester = CCMTTester()
+    tester = CCMTTester(modalities=modalities)
     
     # Testing
     tester.test(
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
+        model_config=saved_model_config,
         batch_size=32,
         output_dir=output_dir,
     )

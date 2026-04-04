@@ -17,9 +17,12 @@ from sklearn.metrics import confusion_matrix
 import os
 
 # Asigură-te că src/ este în sys.path pentru importuri absolute
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
+
+PROJECT_ROOT = project_root()
 
 from torch.utils.data import DataLoader
 from transformers import (
@@ -34,10 +37,9 @@ from peft import PeftModel
 from src.models.full_model import load_ccmt_only_model  # <-- IMPORT CRITIC PENTRU MODELELE TALE
 from src.models import load_full_multimodal_model
 from src.data.dataset import MSP_Podcast_Dataset
-from scripts.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
-from scripts.train_roberta_text_en import TextEncoderDataset as TextEncoderDatasetEN
-from scripts.train_roberta_text_es import TextEncoderDataset as TextEncoderDatasetES
-from scripts.train_wavlm_audio import AudioWaveLMDataset, AudioCollator
+from src.data.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
+from src.data.text_datasets import TextEncoderDataset
+from src.data.audio_datasets import AudioWaveLMDataset, AudioCollator
 
 # ==========================================
 # CONFIGURARE GENERALĂ
@@ -74,7 +76,7 @@ def main():
 
     # Inițializare DataLoaders (ca înainte)
     tokenizer_en = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base-sentiment-latest")
-    val_dataset_en = TextEncoderDatasetEN(
+    val_dataset_en = TextEncoderDataset(
         MSP_Podcast_Dataset(
             audio_root=str(data_dir / 'Audios'),
             labels_csv=str(data_dir / 'Labels' / 'labels_consensus.csv'),
@@ -82,12 +84,15 @@ def main():
             partition="Development",
             modalities=['text_en'],
         ),
-        tokenizer_en
+        tokenizer_en,
+        text_fields=["text_en"],
+        max_length=128,
+        padding="max_length",
     )
     val_loader_en = DataLoader(val_dataset_en, batch_size=BATCH_SIZE, shuffle=False, collate_fn=DataCollatorWithPadding(tokenizer=tokenizer_en))
 
     tokenizer_es = AutoTokenizer.from_pretrained("pysentimiento/robertuito-sentiment-analysis")
-    val_dataset_es = TextEncoderDatasetES(
+    val_dataset_es = TextEncoderDataset(
         MSP_Podcast_Dataset(
             audio_root=str(data_dir / 'Audios'),
             labels_csv=str(data_dir / 'Labels' / 'labels_consensus.csv'),
@@ -95,7 +100,10 @@ def main():
             partition="Development",
             modalities=['text_es'],
         ),
-        tokenizer_es
+        tokenizer_es,
+        text_fields=["text_es", "text_en"],
+        max_length=128,
+        padding="max_length",
     )
     val_loader_es = DataLoader(val_dataset_es, batch_size=BATCH_SIZE, shuffle=False, collate_fn=DataCollatorWithPadding(tokenizer=tokenizer_es))
 
@@ -107,7 +115,11 @@ def main():
             partition="Development",
             modalities=['audio'],
         ),
-        feature_extractor
+        feature_extractor,
+        max_seconds=5,
+        do_resample=False,
+        label_key="label",
+        include_attention_mask=False,
     )
     val_loader_audio = DataLoader(val_dataset_audio, batch_size=BATCH_SIZE, shuffle=False, collate_fn=AudioCollator())
 

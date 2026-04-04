@@ -17,55 +17,23 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
 
-from torch.utils.data import DataLoader, Dataset
+PROJECT_ROOT = project_root()
+
+from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForAudioClassification,
     AutoFeatureExtractor,
 )
-from peft import AutoPeftModelForAudioClassification
 
 from src.data.dataset import MSP_Podcast_Dataset
-
-
-class AudioWaveLMDataset(Dataset):
-    """Dataset wrapper pentru audio WavLM."""
-
-    def __init__(self, msp_dataset: MSP_Podcast_Dataset, feature_extractor):
-        self.msp_dataset = msp_dataset
-        self.feature_extractor = feature_extractor
-        self.sample_rate = 16000
-
-    def __len__(self):
-        return len(self.msp_dataset)
-
-    def __getitem__(self, idx):
-        sample = self.msp_dataset[idx]
-        audio = sample['audio'].numpy() if isinstance(sample['audio'], torch.Tensor) else sample['audio']
-        
-        # Resample la 16kHz dacă e necesar
-        if sample.get('sample_rate', 16000) != self.sample_rate:
-            import librosa
-            audio = librosa.resample(audio, orig_sr=sample.get('sample_rate', 16000), target_sr=self.sample_rate)
-        
-        # Feature extraction
-        inputs = self.feature_extractor(
-            audio,
-            sampling_rate=self.sample_rate,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=160000  # ~10 sec at 16kHz
-        )
-        
-        return {
-            "input_values": inputs["input_values"].squeeze(0),
-            "attention_mask": inputs.get("attention_mask", torch.ones(inputs["input_values"].shape[-1])).squeeze(0) if "attention_mask" in inputs else torch.ones(inputs["input_values"].shape[-1]),
-            "labels": torch.tensor(int(sample['label_id']), dtype=torch.long),
-        }
+from src.data.audio_datasets import AudioWaveLMDataset, AudioCollator
+from src.utils.metrics import compute_classification_metrics
+from src.utils.peft_audio import load_peft_audio_classification_model
 
 
 class AudioTester:
@@ -109,38 +77,13 @@ class AudioTester:
         all_predictions = np.array(all_predictions)
         all_labels = np.array(all_labels)
 
-        # Calcul metrici
-        accuracy = accuracy_score(all_labels, all_predictions)
-        f1_macro = f1_score(all_labels, all_predictions, average='macro', zero_division=0)
-        f1_weighted = f1_score(all_labels, all_predictions, average='weighted', zero_division=0)
-        precision_macro = precision_score(all_labels, all_predictions, average='macro', zero_division=0)
-        recall_macro = recall_score(all_labels, all_predictions, average='macro', zero_division=0)
-        
-        # F1 per clase
-        f1_per_class = {}
-        for label_id, label_name in self.id2label.items():
-            f1_per_class[label_name] = f1_score(
-                all_labels, all_predictions,
-                labels=[label_id],
-                average='micro',
-                zero_division=0
-            )
-
-        cm = confusion_matrix(all_labels, all_predictions)
-        
-        return {
-            "accuracy": float(accuracy),
-            "f1_macro": float(f1_macro),
-            "f1_weighted": float(f1_weighted),
-            "precision_macro": float(precision_macro),
-            "recall_macro": float(recall_macro),
-            "f1_per_class": {k: float(v) for k, v in f1_per_class.items()},
-            "confusion_matrix": cm.tolist(),
-            "avg_loss": float(total_loss / len(val_loader)),
-            "num_samples": len(all_labels),
-            "predictions": all_predictions.tolist(),
-            "labels": all_labels.tolist(),
-        }
+        return compute_classification_metrics(
+            labels=all_labels,
+            predictions=all_predictions,
+            id2label=self.id2label,
+            total_loss=total_loss,
+            num_batches=len(val_loader),
+        )
 
     def plot_confusion_matrix(self, cm, output_path):
         """Plotează confusion matrix."""
@@ -232,38 +175,11 @@ class AudioTester:
             raise FileNotFoundError(f"Model not found at: {best_model_path}")
         
         print(f"\nLoading model from: {best_model_path}")
-        model = AutoPeftModelForAudioClassification.from_pretrained(best_model_path)
+        model = load_peft_audio_classification_model(best_model_path, num_labels=self.num_labels)
         model = model.to(self.device)
         
-        # Create DataLoader with custom collate function
-        def collate_fn(batch):
-            """Custom collate function for audio data."""
-            max_length = max(sample["input_values"].shape[0] for sample in batch)
-            
-            input_values = []
-            attention_masks = []
-            labels = []
-            
-            for sample in batch:
-                # Pad input values
-                pad_length = max_length - sample["input_values"].shape[0]
-                padded = torch.nn.functional.pad(sample["input_values"], (0, pad_length))
-                input_values.append(padded)
-                
-                # Create attention mask
-                attention_mask = torch.ones(max_length)
-                if pad_length > 0:
-                    attention_mask[-pad_length:] = 0
-                attention_masks.append(attention_mask)
-                
-                labels.append(sample["labels"])
-            
-            return {
-                "input_values": torch.stack(input_values),
-                "attention_mask": torch.stack(attention_masks),
-                "labels": torch.stack(labels),
-            }
-        
+        collate_fn = AudioCollator()
+
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -339,7 +255,17 @@ def main():
     # Create tester and wrap dataset
     tester = AudioTester()
     feature_extractor = AutoFeatureExtractor.from_pretrained("microsoft/wavlm-base-plus")
-    val_dataset = AudioWaveLMDataset(val_dataset_msp, feature_extractor)
+    val_dataset = AudioWaveLMDataset(
+        val_dataset_msp,
+        feature_extractor,
+        max_seconds=None,
+        do_resample=True,
+        label_key="label_id",
+        include_attention_mask=True,
+        extractor_padding=True,
+        extractor_truncation=True,
+        extractor_max_length=160000,
+    )
     
     # Testing
     tester.test(

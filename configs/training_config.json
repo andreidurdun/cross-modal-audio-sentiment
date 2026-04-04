@@ -1,0 +1,103 @@
+{
+  "roberta_text_en": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "roberta_text_en_regression": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "roberta_text_es": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "roberta_text_es_regression": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "roberta_text_de": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "roberta_text_de_regression": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "roberta_text_fr": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "roberta_text_fr_regression": {
+    "num_epochs": 5,
+    "batch_size": 256,
+    "learning_rate": 0.0002,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "gradient_accumulation_steps": 1
+  },
+  "wavlm_audio": {
+    "num_epochs": 5,
+    "batch_size": 16,
+    "learning_rate": 0.0003,
+    "lora_r": 8,
+    "lora_alpha": 16,
+    "gradient_accumulation_steps": 2,
+    "use_amp": true
+  },
+  "wavlm_audio_regression": {
+    "num_epochs": 5,
+    "batch_size": 16,
+    "learning_rate": 0.0003,
+    "lora_r": 8,
+    "lora_alpha": 16,
+    "gradient_accumulation_steps": 2,
+    "use_amp": true,
+    "num_workers": 0
+  },
+  "ccmt_classification": {
+    "batch_size": 128,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": 0.0001,
+    "num_epochs": 50,
+    "use_amp": true,
+    "use_compile": false,
+    "num_workers": 1
+  },
+  "ccmt_regression": {
+    "batch_size": 64,
+    "gradient_accumulation_steps": 2,
+    "learning_rate": 0.0001,
+    "num_epochs": 50,
+    "use_amp": true,
+    "use_compile": false,
+    "num_workers": 1
+  }
+}

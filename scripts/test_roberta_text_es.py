@@ -22,71 +22,20 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from tqdm import tqdm
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
 
-from torch.utils.data import DataLoader, Dataset
+PROJECT_ROOT = project_root()
+
+from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, DataCollatorWithPadding
 from peft import AutoPeftModelForSequenceClassification
 
 from src.data.dataset import MSP_Podcast_Dataset
-
-
-class TextEncoderDataset(Dataset):
-    """Dataset wrapper pentru tokenizare text."""
-
-    def __init__(self, msp_dataset: MSP_Podcast_Dataset, tokenizer, lang='es'):
-        self.msp_dataset = msp_dataset
-        self.tokenizer = tokenizer
-        self.lang = lang
-        self.encodings = self._precompute_encodings()
-        self.labels = [int(row['label_id']) for _, row in msp_dataset.metadata.iterrows()]
-
-    def _precompute_encodings(self):
-        """Pre-tokenizează toate textele."""
-        texts = []
-        for idx in range(len(self.msp_dataset)):
-            sample = self.msp_dataset[idx]
-            text = sample.get(f'text_{self.lang}', '')
-            if not text or text.strip() == "":
-                text = "[EMPTY]"
-            texts.append(text.strip())
-        
-        encodings = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt"
-        )
-        return self._sanitize_input_ids(encodings)
-
-    def _sanitize_input_ids(self, encodings):
-        """Ensure input_ids stay within tokenizer vocab range."""
-        input_ids = encodings["input_ids"]
-        vocab_size = int(self.tokenizer.vocab_size)
-        bad_mask = (input_ids < 0) | (input_ids >= vocab_size)
-        if bad_mask.any():
-            bad_count = int(bad_mask.sum().item())
-            unk_id = self.tokenizer.unk_token_id
-            if unk_id is None:
-                unk_id = 0
-            input_ids = input_ids.clone()
-            input_ids[bad_mask] = int(unk_id)
-            encodings["input_ids"] = input_ids
-            print(f"Warning: fixed {bad_count} out-of-range token ids (vocab_size={vocab_size}).")
-        return encodings
-
-    def __len__(self):
-        return len(self.msp_dataset)
-
-    def __getitem__(self, idx):
-        return {
-            "input_ids": self.encodings["input_ids"][idx],
-            "attention_mask": self.encodings["attention_mask"][idx],
-            "labels": torch.tensor(self.labels[idx], dtype=torch.long),
-        }
+from src.data.text_datasets import TextEncoderDataset
+from src.utils.metrics import compute_classification_metrics
 
 
 class TextEsTester:
@@ -128,38 +77,13 @@ class TextEsTester:
         all_predictions = np.array(all_predictions)
         all_labels = np.array(all_labels)
 
-        # Calcul metrici
-        accuracy = accuracy_score(all_labels, all_predictions)
-        f1_macro = f1_score(all_labels, all_predictions, average='macro', zero_division=0)
-        f1_weighted = f1_score(all_labels, all_predictions, average='weighted', zero_division=0)
-        precision_macro = precision_score(all_labels, all_predictions, average='macro', zero_division=0)
-        recall_macro = recall_score(all_labels, all_predictions, average='macro', zero_division=0)
-        
-        # F1 per clase
-        f1_per_class = {}
-        for label_id, label_name in self.id2label.items():
-            f1_per_class[label_name] = f1_score(
-                all_labels, all_predictions,
-                labels=[label_id],
-                average='micro',
-                zero_division=0
-            )
-
-        cm = confusion_matrix(all_labels, all_predictions)
-        
-        return {
-            "accuracy": float(accuracy),
-            "f1_macro": float(f1_macro),
-            "f1_weighted": float(f1_weighted),
-            "precision_macro": float(precision_macro),
-            "recall_macro": float(recall_macro),
-            "f1_per_class": {k: float(v) for k, v in f1_per_class.items()},
-            "confusion_matrix": cm.tolist(),
-            "avg_loss": float(total_loss / len(val_loader)),
-            "num_samples": len(all_labels),
-            "predictions": all_predictions.tolist(),
-            "labels": all_labels.tolist(),
-        }
+        return compute_classification_metrics(
+            labels=all_labels,
+            predictions=all_predictions,
+            id2label=self.id2label,
+            total_loss=total_loss,
+            num_batches=len(val_loader),
+        )
 
     def plot_confusion_matrix(self, cm, output_path):
         """Plotează confusion matrix."""
@@ -336,7 +260,14 @@ def main():
     if not best_model_path.exists():
         raise FileNotFoundError(f"Model not found at: {best_model_path}")
     tokenizer = AutoTokenizer.from_pretrained(best_model_path)
-    val_dataset = TextEncoderDataset(val_dataset_msp, tokenizer, lang='es')
+    val_dataset = TextEncoderDataset(
+        val_dataset_msp,
+        tokenizer,
+        text_fields=["text_es"],
+        max_length=512,
+        padding=True,
+        sanitize_input_ids=True,
+    )
     
     # Testing
     tester.test(

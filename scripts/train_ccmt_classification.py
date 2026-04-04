@@ -4,6 +4,7 @@ from typing import Optional
 import json
 from datetime import datetime
 import time
+import argparse
 
 import torch
 from torch import nn
@@ -21,14 +22,68 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
+
+PROJECT_ROOT = project_root()
 
 from src.models import load_ccmt_only_model
 from src.data.dataset import MSP_Podcast_Dataset
-from scripts.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
+from src.data.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
+from src.utils.config import get_training_config
 from transformers import get_linear_schedule_with_warmup
+
+
+SUPPORTED_MODALITIES = ["text_en", "text_es", "text_de", "text_fr", "audio"]
+
+
+def parse_modalities(modalities_arg: Optional[str]) -> list[str]:
+    if not modalities_arg:
+        return ["text_en", "text_es", "audio"]
+
+    modalities = [item.strip() for item in modalities_arg.split(",") if item.strip()]
+    invalid_modalities = [item for item in modalities if item not in SUPPORTED_MODALITIES]
+    if invalid_modalities:
+        raise ValueError(
+            f"Modalitati invalide: {invalid_modalities}. Alege dintre {SUPPORTED_MODALITIES}"
+        )
+    if "audio" not in modalities:
+        raise ValueError("Configuratiile CCMT suportate aici trebuie sa includa modalitatea 'audio'")
+    if "text_en" not in modalities:
+        raise ValueError("Configuratiile CCMT cerute trebuie sa includa modalitatea 'text_en'")
+    return modalities
+
+
+def build_modality_suffix(modalities: list[str]) -> str:
+    return "_".join(modalities)
+
+
+def resolve_embeddings_dir(embeddings_dir_arg: Optional[str], modalities: list[str]) -> Path:
+    if embeddings_dir_arg:
+        return Path(embeddings_dir_arg)
+
+    if modalities == ["text_en", "text_es", "audio"]:
+        return PROJECT_ROOT / "MSP_Podcast" / "embeddings"
+
+    return PROJECT_ROOT / "MSP_Podcast" / f"embeddings_{build_modality_suffix(modalities)}"
+
+
+def collect_embedding_inputs(
+    batch: dict,
+    modalities: list[str],
+    device: str,
+    amp_dtype: Optional[torch.dtype] = None,
+) -> dict[str, torch.Tensor]:
+    inputs = {}
+    for modality in modalities:
+        tensor = batch[f"{modality}_emb"]
+        if amp_dtype is not None:
+            inputs[f"{modality}_emb"] = tensor.to(device, dtype=amp_dtype, non_blocking=True)
+        else:
+            inputs[f"{modality}_emb"] = tensor.to(device, non_blocking=True)
+    return inputs
 
 
 class CCMTTrainer:
@@ -152,10 +207,12 @@ class CCMTTrainer:
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         
         for batch_idx, batch in enumerate(progress_bar):
-            # Mutăm datele pe device și facem cast la FP16/BF16 concomitent (evităm overhead-ul)
-            text_en_emb = batch['text_en_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
-            text_es_emb = batch['text_es_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
-            audio_emb = batch['audio_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
+            embedding_inputs = collect_embedding_inputs(
+                batch=batch,
+                modalities=self.model_config['modalities'],
+                device=self.device,
+                amp_dtype=amp_dtype,
+            )
             
             # Etichetele rămân întregi (long) pentru CrossEntropyLoss!
             labels = batch['labels'].to(self.device, non_blocking=True)
@@ -163,11 +220,7 @@ class CCMTTrainer:
             # Mixed precision context modern
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=self.use_amp):
                 # Forward pass
-                predictions = self.model(
-                    text_en_emb=text_en_emb,
-                    text_es_emb=text_es_emb, 
-                    audio_emb=audio_emb,
-                )
+                predictions = self.model(**embedding_inputs)
                 
                 # CrossEntropyLoss știe să gestioneze logits în FP16/BF16, dar e mai sigur cu float32 intern
                 loss = self.criterion(predictions.float(), labels)
@@ -244,18 +297,17 @@ class CCMTTrainer:
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         
         for batch in progress_bar:
-            text_en_emb = batch['text_en_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
-            text_es_emb = batch['text_es_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
-            audio_emb = batch['audio_emb'].to(self.device, dtype=amp_dtype, non_blocking=True)
+            embedding_inputs = collect_embedding_inputs(
+                batch=batch,
+                modalities=self.model_config['modalities'],
+                device=self.device,
+                amp_dtype=amp_dtype,
+            )
             labels = batch['labels'].to(self.device, non_blocking=True)
             
             # Mixed precision pentru inferență
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=self.use_amp):
-                predictions = self.model(
-                    text_en_emb=text_en_emb,
-                    text_es_emb=text_es_emb,
-                    audio_emb=audio_emb,
-                )
+                predictions = self.model(**embedding_inputs)
                 
                 loss = self.criterion(predictions.float(), labels)
             
@@ -476,14 +528,42 @@ class CCMTTrainer:
         print(f"✓ Saved training config to {config_path}")
 
 def main():
+    parser = argparse.ArgumentParser(description="Train CCMT classification with selectable modalities")
+    parser.add_argument(
+        "--modalities",
+        type=str,
+        default="text_en,text_es,audio",
+        help="Lista de modalitati separate prin virgula. Exemple: text_en,audio sau text_en,text_fr,audio",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=None,
+        help="Director pentru checkpoint-uri. Daca lipseste, se genereaza automat din modalitati.",
+    )
+    parser.add_argument(
+        "--embeddings-dir",
+        type=str,
+        default=None,
+        help="Directorul cu embeddings precompute. Implicit: MSP_Podcast/embeddings pentru text_en,text_es,audio, altfel MSP_Podcast/embeddings_<modalitati>",
+    )
+    args = parser.parse_args()
+
+    train_config = get_training_config(
+        "ccmt_classification",
+        PROJECT_ROOT / "configs" / "training_config.json",
+    )
+    modalities = parse_modalities(args.modalities)
+    modality_suffix = build_modality_suffix(modalities)
+
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    # OPTIMIZARE: CCMT consumă extrem de puțină memorie, putem urca Batch Size masiv!
-    BATCH_SIZE = 128
-    GRADIENT_ACCUMULATION_STEPS = 1  
-    LEARNING_RATE = 1e-4
-    NUM_EPOCHS = 50
-    USE_AMP = True  # Mixed Precision Training
-    USE_COMPILE = False  # torch.compile() (PyTorch 2.0+, dezactivat pt compatibilitate Windows)
+    BATCH_SIZE = int(train_config["batch_size"])
+    GRADIENT_ACCUMULATION_STEPS = int(train_config["gradient_accumulation_steps"])
+    LEARNING_RATE = float(train_config["learning_rate"])
+    NUM_EPOCHS = int(train_config["num_epochs"])
+    USE_AMP = bool(train_config["use_amp"])
+    USE_COMPILE = bool(train_config["use_compile"])
+    NUM_WORKERS = int(train_config["num_workers"])
     
     # Optimizări CUDA
     if DEVICE == "cuda":
@@ -506,23 +586,38 @@ def main():
     print(f"{'='*70}\n")
     
     # Model configuration parameters
+    embeddings_dir = resolve_embeddings_dir(args.embeddings_dir, modalities)
+    print(f"Embeddings dir: {embeddings_dir}")
+    sample_dataset = PrecomputedEmbeddingsDataset(
+        embeddings_dir=str(embeddings_dir),
+        partition='train',
+        device='cpu',
+        modalities=modalities,
+    )
+    embedding_dims = sample_dataset.get_embedding_dims()
+
     model_config = {
         'num_classes': 3,
-        'text_en_dim': 768,  # Dimensiune embeddings din RoBERTa EN
-        'text_es_dim': 768,  # Dimensiune embeddings din RoBERTa ES
-        'audio_dim': 768,    # Dimensiune embeddings din WavLM
+        'text_en_dim': embedding_dims.get('text_en', 768),
+        'text_es_dim': embedding_dims.get('text_es', 768),
+        'text_de_dim': embedding_dims.get('text_de', 768),
+        'text_fr_dim': embedding_dims.get('text_fr', 768),
+        'audio_dim': embedding_dims.get('audio', 768),
         'ccmt_dim': 768,
         'num_patches_per_modality': 100,
         'ccmt_depth': 4,
         'ccmt_heads': 4,
         'ccmt_mlp_dim': 1024,
         'ccmt_dropout': 0.1,
+        'modalities': modalities,
     }
     
     print("Loading CCMT model (no backbones - using precomputed embeddings)...")
     model = load_ccmt_only_model(
         text_en_dim=model_config['text_en_dim'],
         text_es_dim=model_config['text_es_dim'],
+        text_de_dim=model_config['text_de_dim'],
+        text_fr_dim=model_config['text_fr_dim'],
         audio_dim=model_config['audio_dim'],
         num_classes=model_config['num_classes'],
         ccmt_dim=model_config['ccmt_dim'],
@@ -532,6 +627,7 @@ def main():
         ccmt_mlp_dim=model_config['ccmt_mlp_dim'],
         ccmt_dropout=model_config['ccmt_dropout'],
         device=DEVICE,
+        modalities=modalities,
     )
     
     # Compilare model (PyTorch 2.0+) - experimental, lăsat False din setări
@@ -560,25 +656,21 @@ def main():
     #class_weights = None
     
     # Încarcă embeddingurile precalculate
-    embeddings_dir = PROJECT_ROOT / "MSP_Podcast" / "embeddings"
-    
-    train_dataset = PrecomputedEmbeddingsDataset(
-        embeddings_dir=str(embeddings_dir),
-        partition='train',
-        device='cpu'
-    )
+    train_dataset = sample_dataset
     
     val_dataset = PrecomputedEmbeddingsDataset(
         embeddings_dir=str(embeddings_dir),
         partition='val',
-        device='cpu'
+        device='cpu',
+        modalities=modalities,
     )
     
     # Pentru test, verificăm dacă există test1 (conform partițiilor MSP-Podcast)
     test_dataset = PrecomputedEmbeddingsDataset(
         embeddings_dir=str(embeddings_dir),
         partition='val',  # Folosim val ca fallback dacă nu există test separat
-        device='cpu'
+        device='cpu',
+        modalities=modalities,
     )
     
     # Creăm DataLoaders (Am lăsat num_workers=0, standard pentru stabilitate pe Windows la citire din memorie)
@@ -586,7 +678,7 @@ def main():
         train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=1,
+        num_workers=NUM_WORKERS,
         pin_memory=True if DEVICE == "cuda" else False
     )
     
@@ -594,7 +686,7 @@ def main():
         val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=1,
+        num_workers=NUM_WORKERS,
         pin_memory=True if DEVICE == "cuda" else False
     )
     
@@ -602,7 +694,7 @@ def main():
         test_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=1,
+        num_workers=NUM_WORKERS,
         pin_memory=True if DEVICE == "cuda" else False
     )
     
@@ -610,6 +702,8 @@ def main():
     print(f"  Train: {len(train_dataset)} samples, {len(train_loader)} batches")
     print(f"  Val: {len(val_dataset)} samples, {len(val_loader)} batches")
     print(f"  Test: {len(test_dataset)} samples, {len(test_loader)} batches")
+
+    checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else Path("checkpoints") / f"ccmt_multimodal_{modality_suffix}"
 
     trainer = CCMTTrainer(
         model=model,
@@ -620,7 +714,7 @@ def main():
         learning_rate=LEARNING_RATE,
         weight_decay=0.01,
         num_epochs=NUM_EPOCHS,
-        checkpoint_dir=Path("checkpoints/ccmt_multimodal"),
+        checkpoint_dir=checkpoint_dir,
         early_stopping_patience=7,
         gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
         use_amp=USE_AMP,

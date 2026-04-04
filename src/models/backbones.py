@@ -8,6 +8,31 @@ from torch import nn
 from transformers import AutoModel, AutoTokenizer, AutoModelForAudioClassification, AutoFeatureExtractor
 
 
+def _infer_peft_num_labels(model_path: Path) -> Optional[int]:
+    adapter_weights_path = model_path / "adapter_model.safetensors"
+    if not adapter_weights_path.exists():
+        return None
+
+    try:
+        from safetensors import safe_open
+    except ImportError:
+        return None
+
+    candidate_suffixes = (
+        "classifier.modules_to_save.default.weight",
+        "score.modules_to_save.default.weight",
+        "classifier.weight",
+        "score.weight",
+    )
+
+    with safe_open(str(adapter_weights_path), framework="pt", device="cpu") as file_handle:
+        for key in file_handle.keys():
+            if key.endswith(candidate_suffixes):
+                return int(file_handle.get_tensor(key).shape[0])
+
+    return None
+
+
 def _load_text_encoder_model(model_name: str) -> nn.Module:
     """
     Load a text encoder compatible with pooled embedding extraction.
@@ -21,16 +46,32 @@ def _load_text_encoder_model(model_name: str) -> nn.Module:
     if adapter_config.exists():
         from peft import AutoPeftModelForSequenceClassification
 
-        peft_model = AutoPeftModelForSequenceClassification.from_pretrained(model_name)
+        def _extract_encoder(model: nn.Module) -> nn.Module:
+            base_prefix = getattr(model, "base_model_prefix", None)
+            if base_prefix and hasattr(model, base_prefix):
+                return getattr(model, base_prefix)
+
+            for attribute_name in ("roberta", "bert", "camembert", "deberta", "distilbert"):
+                if hasattr(model, attribute_name):
+                    return getattr(model, attribute_name)
+
+            raise ValueError(f"Unsupported PEFT base model in checkpoint: {model_name}")
+
+        inferred_num_labels = _infer_peft_num_labels(model_path)
+        peft_load_kwargs = {"ignore_mismatched_sizes": True}
+        if inferred_num_labels is not None:
+            peft_load_kwargs["num_labels"] = inferred_num_labels
+
+        peft_model = AutoPeftModelForSequenceClassification.from_pretrained(
+            model_name,
+            **peft_load_kwargs,
+        )
         if hasattr(peft_model, "merge_and_unload"):
             merged_model = peft_model.merge_and_unload()
-            if hasattr(merged_model, "roberta"):
-                return merged_model.roberta
+            return _extract_encoder(merged_model)
 
         base_model = peft_model.base_model.model
-        if hasattr(base_model, "roberta"):
-            return base_model.roberta
-        raise ValueError(f"Unsupported PEFT base model in checkpoint: {model_name}")
+        return _extract_encoder(base_model)
 
     return AutoModel.from_pretrained(model_name)
 
@@ -214,6 +255,46 @@ class TextESBackbone(BaseTextBackbone):
         )
 
 
+class TextDEBackbone(BaseTextBackbone):
+    """German text encoder backbone."""
+
+    def __init__(
+        self,
+        model_name: str = "deepset/gbert-base",
+        max_length: int = 128,
+        use_cls_pooling: bool = False,
+        freeze: bool = True,
+        projection_dim: Optional[int] = 256,
+    ) -> None:
+        super().__init__(
+            model_name=model_name,
+            max_length=max_length,
+            use_cls_pooling=use_cls_pooling,
+            freeze=freeze,
+            projection_dim=projection_dim,
+        )
+
+
+class TextFRBackbone(BaseTextBackbone):
+    """French text encoder backbone."""
+
+    def __init__(
+        self,
+        model_name: str = "almanach/camembert-base",
+        max_length: int = 128,
+        use_cls_pooling: bool = False,
+        freeze: bool = True,
+        projection_dim: Optional[int] = 256,
+    ) -> None:
+        super().__init__(
+            model_name=model_name,
+            max_length=max_length,
+            use_cls_pooling=use_cls_pooling,
+            freeze=freeze,
+            projection_dim=projection_dim,
+        )
+
+
 def load_text_en_backbone(
     checkpoint_dir: Union[str, Path] = "checkpoints/roberta_text_en",
     freeze: bool = True,
@@ -254,6 +335,50 @@ def load_text_es_backbone(
         projection_dim=projection_dim,
     )
     print(f"Loaded Spanish text backbone from {best_model_path}")
+    print(f"  Output dim: {backbone.get_output_dim()}")
+    return backbone
+
+
+def load_text_de_backbone(
+    checkpoint_dir: Union[str, Path] = "checkpoints/roberta_text_de",
+    freeze: bool = True,
+    projection_dim: Optional[int] = 256,
+) -> TextDEBackbone:
+    """Load pretrained German text backbone from checkpoint."""
+    checkpoint_dir = Path(checkpoint_dir)
+    best_model_path = checkpoint_dir / "best_model"
+
+    if not best_model_path.exists():
+        raise FileNotFoundError(f"Model not found at {best_model_path}")
+
+    backbone = TextDEBackbone(
+        model_name=str(best_model_path),
+        freeze=freeze,
+        projection_dim=projection_dim,
+    )
+    print(f"Loaded German text backbone from {best_model_path}")
+    print(f"  Output dim: {backbone.get_output_dim()}")
+    return backbone
+
+
+def load_text_fr_backbone(
+    checkpoint_dir: Union[str, Path] = "checkpoints/roberta_text_fr",
+    freeze: bool = True,
+    projection_dim: Optional[int] = 256,
+) -> TextFRBackbone:
+    """Load pretrained French text backbone from checkpoint."""
+    checkpoint_dir = Path(checkpoint_dir)
+    best_model_path = checkpoint_dir / "best_model"
+
+    if not best_model_path.exists():
+        raise FileNotFoundError(f"Model not found at {best_model_path}")
+
+    backbone = TextFRBackbone(
+        model_name=str(best_model_path),
+        freeze=freeze,
+        projection_dim=projection_dim,
+    )
+    print(f"Loaded French text backbone from {best_model_path}")
     print(f"  Output dim: {backbone.get_output_dim()}")
     return backbone
 
@@ -452,38 +577,56 @@ def load_text_backbones(
 def load_all_backbones(
     text_en_checkpoint: Union[str, Path] = "checkpoints/roberta_text_en",
     text_es_checkpoint: Union[str, Path] = "checkpoints/roberta_text_es",
+    text_de_checkpoint: Union[str, Path] = "checkpoints/roberta_text_de",
+    text_fr_checkpoint: Union[str, Path] = "checkpoints/roberta_text_fr",
     audio_checkpoint: Union[str, Path] = "checkpoints/wavlm_audio",
     freeze: bool = True,
     projection_dim: Optional[int] = 256,
+    modalities: Optional[List[str]] = None,
 ) -> Dict[str, nn.Module]:
-    """Load all three backbones (text_en, text_es, audio) for multimodal fusion."""
+    """Load requested backbones for multimodal fusion."""
     print("\n" + "="*60)
     print("Loading All Multimodal Backbones")
     print("="*60)
-    
-    backbones = {
-        'text_en': load_text_en_backbone(
+    modalities = list(modalities or ["text_en", "text_es", "audio"])
+    loaders = {
+        'text_en': lambda: load_text_en_backbone(
             text_en_checkpoint,
             freeze=freeze,
             projection_dim=projection_dim,
         ),
-        'text_es': load_text_es_backbone(
+        'text_es': lambda: load_text_es_backbone(
             text_es_checkpoint,
             freeze=freeze,
             projection_dim=projection_dim,
         ),
-        'audio': load_audio_backbone(
+        'text_de': lambda: load_text_de_backbone(
+            text_de_checkpoint,
+            freeze=freeze,
+            projection_dim=projection_dim,
+        ),
+        'text_fr': lambda: load_text_fr_backbone(
+            text_fr_checkpoint,
+            freeze=freeze,
+            projection_dim=projection_dim,
+        ),
+        'audio': lambda: load_audio_backbone(
             audio_checkpoint,
             freeze=freeze,
             projection_dim=projection_dim,
         ),
     }
+
+    invalid_modalities = set(modalities) - set(loaders)
+    if invalid_modalities:
+        raise ValueError(f"Unsupported modalities requested: {sorted(invalid_modalities)}")
+
+    backbones = {modality: loaders[modality]() for modality in modalities}
     
     print(f"\n" + "="*60)
-    print(f"All 3 backbones loaded successfully!")
-    print(f"  text_en:  {backbones['text_en'].get_output_dim()} dim")
-    print(f"  text_es:  {backbones['text_es'].get_output_dim()} dim")
-    print(f"  audio:    {backbones['audio'].get_output_dim()} dim")
+    print(f"All requested backbones loaded successfully!")
+    for modality, backbone in backbones.items():
+        print(f"  {modality}: {backbone.get_output_dim()} dim")
     print("="*60 + "\n")
     
     return backbones

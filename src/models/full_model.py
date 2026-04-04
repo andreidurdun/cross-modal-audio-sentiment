@@ -10,13 +10,7 @@ from typing import Dict, List, Optional, Union, Tuple
 import torch
 from torch import nn
 
-from src.models.backbones import (
-    BaseTextBackbone, 
-    BaseAudioBackbone,
-    load_text_backbones,
-    load_audio_backbone,
-    load_all_backbones,
-)
+from src.models.backbones import BaseTextBackbone, BaseAudioBackbone, load_all_backbones
 from src.models.fusion_net import MultimodalFusionAdapter
 from src.models.ccmt_layer import CascadedCrossModalTransformer
 
@@ -49,12 +43,17 @@ class MultimodalEmotionModel(nn.Module):
         # Backbones
         text_en_backbone: Optional[BaseTextBackbone] = None,
         text_es_backbone: Optional[BaseTextBackbone] = None,
+        text_de_backbone: Optional[BaseTextBackbone] = None,
+        text_fr_backbone: Optional[BaseTextBackbone] = None,
         audio_backbone: Optional[nn.Module] = None,
         
         # Dimensiuni embeddings
         text_en_dim: int = 768,
         text_es_dim: int = 768,
+        text_de_dim: int = 768,
+        text_fr_dim: int = 768,
         audio_dim: int = 768,
+        modalities: Optional[List[str]] = None,
         
         # CCMT config
         num_classes: int = 3,
@@ -99,7 +98,17 @@ class MultimodalEmotionModel(nn.Module):
         # Salvăm backbones (pot fi None dacă vrem să le adăugăm mai târziu)
         self.text_en_backbone = text_en_backbone
         self.text_es_backbone = text_es_backbone
+        self.text_de_backbone = text_de_backbone
+        self.text_fr_backbone = text_fr_backbone
         self.audio_backbone = audio_backbone
+        self.modalities = list(modalities or ["text_es", "text_en", "audio"])
+        self.modality_dims = {
+            "text_en": text_en_dim,
+            "text_es": text_es_dim,
+            "text_de": text_de_dim,
+            "text_fr": text_fr_dim,
+            "audio": audio_dim,
+        }
         
         self.freeze_backbones = freeze_backbones
         if freeze_backbones:
@@ -107,9 +116,11 @@ class MultimodalEmotionModel(nn.Module):
         
         # Fusion adapters - convertesc embeddings la patch tokens
         self.fusion_adapter = MultimodalFusionAdapter(
-            text_en_dim=text_en_dim,
-            text_es_dim=text_es_dim,
-            audio_dim=audio_dim,
+            modality_dims={
+                modality: self.modality_dims[modality]
+                for modality in self.modalities
+            },
+            modalities=self.modalities,
             ccmt_dim=ccmt_dim,
             num_patches_per_modality=num_patches_per_modality,
             dropout=fusion_dropout,
@@ -117,7 +128,7 @@ class MultimodalEmotionModel(nn.Module):
         )
         
         # CCMT - cross-modal transformer pentru fusion și predicție
-        total_patches = num_patches_per_modality * 3
+        total_patches = num_patches_per_modality * len(self.modalities)
         self.ccmt = CascadedCrossModalTransformer(
             num_outputs=num_classes,
             num_patches=total_patches,
@@ -128,6 +139,7 @@ class MultimodalEmotionModel(nn.Module):
             dim_head=ccmt_dim_head,
             dropout=ccmt_dropout,
             regression=regression,
+            modalities=self.modalities,
         )
         self.num_classes = num_classes
         self.num_patches_per_modality = num_patches_per_modality
@@ -141,6 +153,14 @@ class MultimodalEmotionModel(nn.Module):
         if self.text_es_backbone is not None:
             for param in self.text_es_backbone.parameters():
                 param.requires_grad = False
+
+        if self.text_de_backbone is not None:
+            for param in self.text_de_backbone.parameters():
+                param.requires_grad = False
+
+        if self.text_fr_backbone is not None:
+            for param in self.text_fr_backbone.parameters():
+                param.requires_grad = False
         
         if self.audio_backbone is not None:
             for param in self.audio_backbone.parameters():
@@ -150,11 +170,15 @@ class MultimodalEmotionModel(nn.Module):
         self,
         text_en: Optional[Union[List[str], torch.Tensor]] = None,
         text_es: Optional[Union[List[str], torch.Tensor]] = None,
+        text_de: Optional[Union[List[str], torch.Tensor]] = None,
+        text_fr: Optional[Union[List[str], torch.Tensor]] = None,
         audio: Optional[torch.Tensor] = None,
         
         # Pre-computed embeddings (opțional - mai rapid la inference)
         text_en_emb: Optional[torch.Tensor] = None,
         text_es_emb: Optional[torch.Tensor] = None,
+        text_de_emb: Optional[torch.Tensor] = None,
+        text_fr_emb: Optional[torch.Tensor] = None,
         audio_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
@@ -175,34 +199,44 @@ class MultimodalEmotionModel(nn.Module):
         Returns:
             Predicții clase: (batch_size, num_classes) cu Sigmoid aplicat
         """
-        # Extragere embeddings dacă nu sunt pre-calculate
-        if text_en_emb is None:
-            if text_en is None:
-                raise ValueError("Trebuie furnizat fie text_en, fie text_en_emb")
-            if self.text_en_backbone is None:
-                raise ValueError("text_en_backbone nu este setat")
-            text_en_emb = self.text_en_backbone(text_en)
-        
-        if text_es_emb is None:
-            if text_es is None:
-                raise ValueError("Trebuie furnizat fie text_es, fie text_es_emb")
-            if self.text_es_backbone is None:
-                raise ValueError("text_es_backbone nu este setat")
-            text_es_emb = self.text_es_backbone(text_es)
-        
-        if audio_emb is None:
-            if audio is None:
-                raise ValueError("Trebuie furnizat fie audio, fie audio_emb")
-            if self.audio_backbone is None:
-                raise ValueError("audio_backbone nu este setat")
-            audio_emb = self.audio_backbone(audio)
-        
-        # Fusion - convertim embeddings la patch tokens
+        raw_inputs = {
+            "text_en": text_en,
+            "text_es": text_es,
+            "text_de": text_de,
+            "text_fr": text_fr,
+            "audio": audio,
+        }
+        embeddings = {
+            "text_en": text_en_emb,
+            "text_es": text_es_emb,
+            "text_de": text_de_emb,
+            "text_fr": text_fr_emb,
+            "audio": audio_emb,
+        }
+        backbones = {
+            "text_en": self.text_en_backbone,
+            "text_es": self.text_es_backbone,
+            "text_de": self.text_de_backbone,
+            "text_fr": self.text_fr_backbone,
+            "audio": self.audio_backbone,
+        }
+
+        for modality in self.modalities:
+            if embeddings[modality] is not None:
+                continue
+            if raw_inputs[modality] is None:
+                raise ValueError(f"Trebuie furnizat fie {modality}, fie {modality}_emb")
+            if backbones[modality] is None:
+                raise ValueError(f"{modality}_backbone nu este setat")
+            embeddings[modality] = backbones[modality](raw_inputs[modality])
+
         multimodal_tokens = self.fusion_adapter(
-            text_en_emb=text_en_emb,
-            text_es_emb=text_es_emb,
-            audio_emb=audio_emb,
-        )  # (batch, total_patches, ccmt_dim)
+            modality_embeddings={
+                modality: embeddings[modality]
+                for modality in self.modalities
+                if embeddings[modality] is not None
+            }
+        )
         
         # CCMT - cross-modal attention și predicție
         predictions = self.ccmt(multimodal_tokens)  # (batch, num_classes)
@@ -213,9 +247,13 @@ class MultimodalEmotionModel(nn.Module):
         self,
         text_en: Optional[Union[List[str], torch.Tensor]] = None,
         text_es: Optional[Union[List[str], torch.Tensor]] = None,
+        text_de: Optional[Union[List[str], torch.Tensor]] = None,
+        text_fr: Optional[Union[List[str], torch.Tensor]] = None,
         audio: Optional[torch.Tensor] = None,
         text_en_emb: Optional[torch.Tensor] = None,
         text_es_emb: Optional[torch.Tensor] = None,
+        text_de_emb: Optional[torch.Tensor] = None,
+        text_fr_emb: Optional[torch.Tensor] = None,
         audio_emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -230,9 +268,13 @@ class MultimodalEmotionModel(nn.Module):
             predictions = self.forward(
                 text_en=text_en,
                 text_es=text_es,
+                text_de=text_de,
+                text_fr=text_fr,
                 audio=audio,
                 text_en_emb=text_en_emb,
                 text_es_emb=text_es_emb,
+                text_de_emb=text_de_emb,
+                text_fr_emb=text_fr_emb,
                 audio_emb=audio_emb,
             )
             predicted_classes = predictions.argmax(dim=-1)
@@ -266,6 +308,8 @@ class MultimodalEmotionModel(nn.Module):
 def load_full_multimodal_model(
     text_en_checkpoint: Union[str, Path] = "checkpoints/roberta_text_en",
     text_es_checkpoint: Union[str, Path] = "checkpoints/roberta_text_es",
+    text_de_checkpoint: Union[str, Path] = "checkpoints/roberta_text_de",
+    text_fr_checkpoint: Union[str, Path] = "checkpoints/roberta_text_fr",
     audio_checkpoint: Union[str, Path] = "checkpoints/wavlm_audio",
     
     num_classes: int = 3,
@@ -278,6 +322,7 @@ def load_full_multimodal_model(
     freeze_backbones: bool = True,
     projection_dim: Optional[int] = 256,
     device: Optional[str] = None,
+    modalities: Optional[List[str]] = None,
 ) -> MultimodalEmotionModel:
     """
     Încarcă modelul complet cu backbones pretrenate.
@@ -305,39 +350,48 @@ def load_full_multimodal_model(
     print("LOADING FULL MULTIMODAL MODEL")
     print("="*60)
     
+    modalities = list(modalities or ["text_es", "text_en", "audio"])
+
     # Încarcă toate backbones
-    print("\n1. Loading all backbones (text_en, text_es, audio)...")
+    print(f"\n1. Loading all backbones {modalities}...")
     backbones = load_all_backbones(
         text_en_checkpoint=text_en_checkpoint,
         text_es_checkpoint=text_es_checkpoint,
+        text_de_checkpoint=text_de_checkpoint,
+        text_fr_checkpoint=text_fr_checkpoint,
         audio_checkpoint=audio_checkpoint,
         freeze=freeze_backbones,
         projection_dim=projection_dim,
+        modalities=modalities,
     )
     
-    text_en_backbone = backbones['text_en']
-    text_es_backbone = backbones['text_es']
-    audio_backbone = backbones['audio']
+    text_en_backbone = backbones.get('text_en')
+    text_es_backbone = backbones.get('text_es')
+    text_de_backbone = backbones.get('text_de')
+    text_fr_backbone = backbones.get('text_fr')
+    audio_backbone = backbones.get('audio')
     
     # Dimensiuni embeddings
-    text_en_dim = text_en_backbone.get_output_dim()
-    text_es_dim = text_es_backbone.get_output_dim()
-    audio_dim = audio_backbone.get_output_dim()
+    modality_dims = {modality: backbones[modality].get_output_dim() for modality in modalities}
     
     print(f"\n2. Detected embedding dimensions:")
-    print(f"   - Text EN: {text_en_dim}")
-    print(f"   - Text ES: {text_es_dim}")
-    print(f"   - Audio:   {audio_dim}")
+    for modality, dim_value in modality_dims.items():
+        print(f"   - {modality}: {dim_value}")
     
     # Construiește modelul
     print("\n3. Building full model architecture...")
     model = MultimodalEmotionModel(
         text_en_backbone=text_en_backbone,
         text_es_backbone=text_es_backbone,
+        text_de_backbone=text_de_backbone,
+        text_fr_backbone=text_fr_backbone,
         audio_backbone=audio_backbone,
-        text_en_dim=text_en_dim,
-        text_es_dim=text_es_dim,
-        audio_dim=audio_dim,
+        text_en_dim=modality_dims.get('text_en', 768),
+        text_es_dim=modality_dims.get('text_es', 768),
+        text_de_dim=modality_dims.get('text_de', 768),
+        text_fr_dim=modality_dims.get('text_fr', 768),
+        audio_dim=modality_dims.get('audio', 768),
+        modalities=modalities,
         num_classes=num_classes,
         ccmt_dim=ccmt_dim,
         num_patches_per_modality=num_patches_per_modality,
@@ -359,6 +413,8 @@ def load_full_multimodal_model(
 def load_ccmt_only_model(
     text_en_dim: int = 768,
     text_es_dim: int = 768,
+    text_de_dim: int = 768,
+    text_fr_dim: int = 768,
     audio_dim: int = 768,
     num_classes: int = 3,
     ccmt_dim: int = 768,
@@ -368,6 +424,7 @@ def load_ccmt_only_model(
     ccmt_mlp_dim: int = 1024,
     ccmt_dropout: float = 0.2,
     device: Optional[str] = None,
+    modalities: Optional[List[str]] = None,
 ) -> MultimodalEmotionModel:
     """
     Încarcă modelul DOAR cu fusion + CCMT (fără backbones).
@@ -396,18 +453,25 @@ def load_ccmt_only_model(
     print("\n" + "="*60)
     print("LOADING CCMT-ONLY MODEL (No Backbones)")
     print("="*60)
+    modalities = list(modalities or ["text_es", "text_en", "audio"])
     print(f"Device: {device}")
-    print(f"Input dims: text_en={text_en_dim}, text_es={text_es_dim}, audio={audio_dim}")
+    print(f"Input dims: text_en={text_en_dim}, text_es={text_es_dim}, text_de={text_de_dim}, text_fr={text_fr_dim}, audio={audio_dim}")
+    print(f"Modalities: {modalities}")
     print(f"CCMT config: dim={ccmt_dim}, depth={ccmt_depth}, heads={ccmt_heads}, dropout={ccmt_dropout}")
     
     # Construiește modelul FĂRĂ backbones
     model = MultimodalEmotionModel(
         text_en_backbone=None,  # Nu încărcăm backbones
         text_es_backbone=None,
+        text_de_backbone=None,
+        text_fr_backbone=None,
         audio_backbone=None,
         text_en_dim=text_en_dim,
         text_es_dim=text_es_dim,
+        text_de_dim=text_de_dim,
+        text_fr_dim=text_fr_dim,
         audio_dim=audio_dim,
+        modalities=modalities,
         num_classes=num_classes,
         ccmt_dim=ccmt_dim,
         num_patches_per_modality=num_patches_per_modality,
@@ -455,6 +519,7 @@ if __name__ == '__main__':
         text_en_dim=768,
         text_es_dim=768,
         audio_dim=768,
+        modalities=["text_en", "text_es", "audio"],
         num_classes=3,
         ccmt_dim=1024,
         num_patches_per_modality=100,

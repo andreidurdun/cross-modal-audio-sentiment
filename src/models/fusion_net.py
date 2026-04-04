@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from typing import Optional, Tuple
+from typing import Dict, List, Optional
 
 
 class ModalityAdapter(nn.Module):
@@ -148,9 +148,8 @@ class MultimodalFusionAdapter(nn.Module):
 
     def __init__(
         self,
-        text_en_dim: int = 768,
-        text_es_dim: int = 768,
-        audio_dim: int = 768,
+        modality_dims: Dict[str, int],
+        modalities: List[str],
         ccmt_dim: int = 1024,
         num_patches_per_modality: int = 100,
         dropout: float = 0.1,
@@ -158,71 +157,72 @@ class MultimodalFusionAdapter(nn.Module):
     ):
         """
         Args:
-            text_en_dim: Dimensiune embedding text EN
-            text_es_dim: Dimensiune embedding text ES
-            audio_dim: Dimensiune embedding audio
+            modality_dims: Dimensiuni embeddings pentru fiecare modalitate activa
+            modalities: Ordinea modalitatilor folosita la concatenarea tokenilor
             ccmt_dim: Dimensiune token CCMT (trebuie consistentă)
-            num_patches_per_modality: Patch-uri per modalitate (total va fi 3x)
+            num_patches_per_modality: Patch-uri per modalitate
             dropout: Dropout rate
             use_audio_temporal_pooling: Pooling temporal pentru audio
         """
         super().__init__()
-        
-        self.text_en_adapter = ModalityAdapter(
-            input_dim=text_en_dim,
-            output_dim=ccmt_dim,
-            num_patches=num_patches_per_modality,
-            dropout=dropout,
-        )
-        
-        self.text_es_adapter = ModalityAdapter(
-            input_dim=text_es_dim,
-            output_dim=ccmt_dim,
-            num_patches=num_patches_per_modality,
-            dropout=dropout,
-        )
-        
-        self.audio_adapter = AudioAdapter(
-            input_dim=audio_dim,
-            output_dim=ccmt_dim,
-            num_patches=num_patches_per_modality,
-            dropout=dropout,
-            use_temporal_pooling=use_audio_temporal_pooling,
-        )
-        
+        if not modalities:
+            raise ValueError("MultimodalFusionAdapter necesita cel putin o modalitate")
+
+        missing_dims = [modality for modality in modalities if modality not in modality_dims]
+        if missing_dims:
+            raise ValueError(f"Lipsesc dimensiuni pentru modalitati: {missing_dims}")
+
+        self.modalities = list(modalities)
+        self.adapters = nn.ModuleDict()
+        for modality in self.modalities:
+            if modality == "audio":
+                self.adapters[modality] = AudioAdapter(
+                    input_dim=modality_dims[modality],
+                    output_dim=ccmt_dim,
+                    num_patches=num_patches_per_modality,
+                    dropout=dropout,
+                    use_temporal_pooling=use_audio_temporal_pooling,
+                )
+            else:
+                self.adapters[modality] = ModalityAdapter(
+                    input_dim=modality_dims[modality],
+                    output_dim=ccmt_dim,
+                    num_patches=num_patches_per_modality,
+                    dropout=dropout,
+                )
+
         self.num_patches_per_modality = num_patches_per_modality
-        self.total_patches = num_patches_per_modality * 3
+        self.total_patches = num_patches_per_modality * len(self.modalities)
 
     def forward(
         self,
-        text_en_emb: torch.Tensor,
-        text_es_emb: torch.Tensor,
-        audio_emb: torch.Tensor,
+        modality_embeddings: Optional[Dict[str, torch.Tensor]] = None,
+        **legacy_embeddings: torch.Tensor,
     ) -> torch.Tensor:
         """
         Args:
-            text_en_emb: (batch_size, text_en_dim) 
-            text_es_emb: (batch_size, text_es_dim)
-            audio_emb: (batch_size, audio_dim) sau (batch_size, seq_len, audio_dim)
+            modality_embeddings: Mapping intre modalitate si embedding
         
         Returns:
             Multimodal token patches: (batch_size, total_patches, ccmt_dim)
-            Ordinea: [text_es_patches | text_en_patches | audio_patches]
+            Ordinea urmeaza lista `modalities`
         """
-        # Generăm patch-uri pentru fiecare modalitate
-        text_en_patches = self.text_en_adapter(text_en_emb)  # (B, num_patches, dim)
-        text_es_patches = self.text_es_adapter(text_es_emb)  # (B, num_patches, dim)
-        audio_patches = self.audio_adapter(audio_emb)        # (B, num_patches, dim)
-        
-        # Concatenăm pe dimensiunea de patch-uri
-        # Ordinea trebuie să corespundă cu ce așteaptă CCMT:
-        # CCMT așteaptă: text1 (es), text2 (en), audio - în funcție de pos_embedding
-        multimodal_tokens = torch.cat(
-            [text_es_patches, text_en_patches, audio_patches],
-            dim=1
-        )  # (B, 3 * num_patches, dim)
-        
-        return multimodal_tokens
+        modality_embeddings = dict(modality_embeddings or {})
+        for key, value in legacy_embeddings.items():
+            if key.endswith("_emb"):
+                modality_embeddings[key[:-4]] = value
+
+        missing_modalities = [
+            modality for modality in self.modalities if modality not in modality_embeddings
+        ]
+        if missing_modalities:
+            raise ValueError(f"Lipsesc embeddings pentru modalitati: {missing_modalities}")
+
+        modality_patches = [
+            self.adapters[modality](modality_embeddings[modality])
+            for modality in self.modalities
+        ]
+        return torch.cat(modality_patches, dim=1)
 
     def get_total_patches(self) -> int:
         """Returnează numărul total de patch-uri/tokens generate."""
@@ -234,34 +234,40 @@ if __name__ == '__main__':
     print("Testing MultimodalFusionAdapter...")
     
     batch_size = 16
-    text_en_dim = 768
-    text_es_dim = 768
-    audio_dim = 768
     ccmt_dim = 1024
     num_patches = 100
+    modalities = ["text_en", "text_es", "audio"]
+    modality_dims = {
+        "text_en": 768,
+        "text_es": 768,
+        "audio": 768,
+    }
     
     adapter = MultimodalFusionAdapter(
-        text_en_dim=text_en_dim,
-        text_es_dim=text_es_dim,
-        audio_dim=audio_dim,
+        modality_dims=modality_dims,
+        modalities=modalities,
         ccmt_dim=ccmt_dim,
         num_patches_per_modality=num_patches,
     )
     
     # Simulăm embeddings
-    text_en_emb = torch.randn(batch_size, text_en_dim)
-    text_es_emb = torch.randn(batch_size, text_es_dim)
-    audio_emb = torch.randn(batch_size, audio_dim)
+    text_en_emb = torch.randn(batch_size, modality_dims["text_en"])
+    text_es_emb = torch.randn(batch_size, modality_dims["text_es"])
+    audio_emb = torch.randn(batch_size, modality_dims["audio"])
     
     # Forward pass
-    multimodal_tokens = adapter(text_en_emb, text_es_emb, audio_emb)
+    multimodal_tokens = adapter(
+        text_en_emb=text_en_emb,
+        text_es_emb=text_es_emb,
+        audio_emb=audio_emb,
+    )
     
     print(f"✓ Input shapes:")
     print(f"  text_en: {text_en_emb.shape}")
     print(f"  text_es: {text_es_emb.shape}")
     print(f"  audio: {audio_emb.shape}")
     print(f"✓ Output shape: {multimodal_tokens.shape}")
-    print(f"✓ Expected: (batch={batch_size}, patches={num_patches*3}, dim={ccmt_dim})")
+    print(f"✓ Expected: (batch={batch_size}, patches={num_patches * len(modalities)}, dim={ccmt_dim})")
     
-    assert multimodal_tokens.shape == (batch_size, num_patches * 3, ccmt_dim)
+    assert multimodal_tokens.shape == (batch_size, num_patches * len(modalities), ccmt_dim)
     print("\n✅ All tests passed!")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Literal
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +27,7 @@ class MSP_Podcast_Dataset(Dataset):
     }
     
 
-    SUPPORTED_MODALITIES = ['audio', 'text_en', 'text_es']
+    SUPPORTED_MODALITIES = ['audio', 'text_en', 'text_es', 'text_de', 'text_fr']
 
     def __init__(
         self,
@@ -36,10 +35,12 @@ class MSP_Podcast_Dataset(Dataset):
         labels_csv,
         transcripts_en_json=None,
         transcripts_es_json=None,
+        transcripts_de_json=None,
+        transcripts_fr_json=None,
         partition='Train',
         target_sample_rate=16000,
         audio_processor: AudioProcessor | None = None,
-        modalities: list[Literal['audio', 'text_en', 'text_es']] | None = None,
+        modalities: list[str] | None = None,
     ):
         super().__init__()
         
@@ -62,22 +63,25 @@ class MSP_Podcast_Dataset(Dataset):
         print(f"Dataset initialized with modalities: {self.modalities}")
         
         # configurare directoare transcripturi
-        self.transcripts_cache_en = {}
-        self.transcripts_cache_es = {}
-        
-        if 'text_en' in self.modalities:
-            self.transcripts_en_json = transcripts_en_json
-            if self.transcripts_en_json is None:
-                raise ValueError(f"Fisier invalid: {self.transcripts_en_json}")
-        else:
-            self.transcripts_en_json = None
-        
-        if 'text_es' in self.modalities:
-            self.transcripts_es_json = transcripts_es_json
-            if self.transcripts_es_json is None:
-                raise ValueError(f"Fisier invalid: {self.transcripts_es_json}")
-        else:
-            self.transcripts_es_json = None
+        self.transcript_json_paths = {
+            'text_en': transcripts_en_json,
+            'text_es': transcripts_es_json,
+            'text_de': transcripts_de_json,
+            'text_fr': transcripts_fr_json,
+        }
+        self.transcript_caches = {
+            'text_en': {},
+            'text_es': {},
+            'text_de': {},
+            'text_fr': {},
+        }
+
+        for modality in self.modalities:
+            if not modality.startswith('text_'):
+                continue
+            transcript_path = self.transcript_json_paths.get(modality)
+            if transcript_path is None:
+                raise ValueError(f"Fisier invalid pentru {modality}: {transcript_path}")
         
         #configurare Audio Processor
         if 'audio' in self.modalities:
@@ -108,19 +112,18 @@ class MSP_Podcast_Dataset(Dataset):
         print(f"Loaded {len(self.metadata)} files for partition: {partition}")
      
         #incarare transcripturi in memorie
-        if 'text_en' in self.modalities:
-            if self.transcripts_en_json is not None:
-                print(f"Loading English transcripts from JSON: {self.transcripts_en_json}")
-                self.transcripts_cache_en = self._load_transcripts_json(self.transcripts_en_json)
-            else:
-                raise ValueError("transcripts_en_json este necesar pentru 'text_en' in modalities")
-        
-        if 'text_es' in self.modalities:
-            if self.transcripts_es_json is not None:
-                print(f"Loading Spanish transcripts from JSON: {self.transcripts_es_json}")
-                self.transcripts_cache_es = self._load_transcripts_json(self.transcripts_es_json)
-            else:
-                raise ValueError("transcripts_es_json este necesar pentru 'text_es' in modalities")
+        language_labels = {
+            'text_en': 'English',
+            'text_es': 'Spanish',
+            'text_de': 'German',
+            'text_fr': 'French',
+        }
+        for modality in self.modalities:
+            if not modality.startswith('text_'):
+                continue
+            transcript_path = self.transcript_json_paths[modality]
+            print(f"Loading {language_labels.get(modality, modality)} transcripts from JSON: {transcript_path}")
+            self.transcript_caches[modality] = self._load_transcripts_json(transcript_path)
                 
         print(f"Dataset initialization complete! {len(self.metadata)} samples ready\n")
 
@@ -181,15 +184,12 @@ class MSP_Podcast_Dataset(Dataset):
         for idx in range(len(self)):
             sample = self[idx]
             
-            if 'text_en' in self.modalities:
-                text_en = sample.get('text_en', '')
-                if text_en:
-                    max_length = max(max_length, len(text_en))
-            
-            if 'text_es' in self.modalities:
-                text_es = sample.get('text_es', '')
-                if text_es:
-                    max_length = max(max_length, len(text_es))
+            for modality in self.modalities:
+                if not modality.startswith('text_'):
+                    continue
+                text_value = sample.get(modality, '')
+                if text_value:
+                    max_length = max(max_length, len(text_value))
         
         return max_length
 
@@ -244,17 +244,17 @@ class MSP_Podcast_Dataset(Dataset):
             output['audio'] = waveform
         
         #text en din cache
-        if 'text_en' in self.modalities:
-            text_en = self.transcripts_cache_en.get(file_id_key, "")
-            output['text_en'] = text_en
-        
-        #text es din cache
-        if 'text_es' in self.modalities:
-            text_es = self.transcripts_cache_es.get(file_id_key, "")
-            output['text_es'] = text_es
+        for modality in self.modalities:
+            if not modality.startswith('text_'):
+                continue
+            output[modality] = self.transcript_caches[modality].get(file_id_key, "")
         
         #labelul final
         output['label'] = int(row['label_id'])
+        output['label_id'] = int(row['label_id'])
+        output['valence'] = float(row['EmoVal'])
+        output['arousal'] = float(row['EmoAct'])
+        output['val_arousal'] = torch.tensor([float(row['EmoVal']), float(row['EmoAct'])], dtype=torch.float32)
         output['file_id'] = file_id
 
         return output

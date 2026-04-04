@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from einops import rearrange
+from typing import List
 
 
 class PreNorm(nn.Module):
@@ -81,17 +82,35 @@ class Transformer(nn.Module):
 
 
 class CascadedCrossModalTransformer(nn.Module):
-    def __init__(self, num_outputs, num_patches, dim, depth, heads, mlp_dim, dim_head=64, dropout=0.20, regression=False):
+    def __init__(
+        self,
+        num_outputs,
+        num_patches,
+        dim,
+        depth,
+        heads,
+        mlp_dim,
+        dim_head=64,
+        dropout=0.20,
+        regression=False,
+        modalities: List[str] | None = None,
+    ):
         super().__init__()
-        assert num_patches % 3 == 0, "The number of patched must be equal for all modalities!"
-        self.ppm = num_patches // 3  # Number of patches per modality
+        self.modalities = list(modalities or ["text_es", "text_en", "audio"])
+        if not self.modalities:
+            raise ValueError("CCMT necesita cel putin o modalitate")
+        if num_patches % len(self.modalities) != 0:
+            raise ValueError("The number of patches must be equal for all selected modalities")
 
-        self.pos_embedding_text = nn.Parameter(torch.randn(1, self.ppm, dim))
-        self.pos_embedding_text_en = nn.Parameter(torch.randn(1, self.ppm, dim))
-        self.pos_embedding_audio = nn.Parameter(torch.randn(1, self.ppm, dim))
-
-        self.cross_tr_language = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
-        self.cross_tr_speech = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+        self.ppm = num_patches // len(self.modalities)
+        self.pos_embeddings = nn.ParameterDict({
+            modality: nn.Parameter(torch.randn(1, self.ppm, dim))
+            for modality in self.modalities
+        })
+        self.cross_transformers = nn.ModuleList([
+            Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
+            for _ in range(max(len(self.modalities) - 1, 0))
+        ])
 
 
         self.regression = regression
@@ -108,19 +127,30 @@ class CascadedCrossModalTransformer(nn.Module):
             )
 
     def forward(self, x):
-        text1_tokens = x[:, :self.ppm] + self.pos_embedding_text
-        text2_tokens = x[:, self.ppm:2*self.ppm] + self.pos_embedding_text_en
-        audio_tokens = x[:, 2*self.ppm:] + self.pos_embedding_audio
+        token_chunks = []
+        for index, modality in enumerate(self.modalities):
+            start = index * self.ppm
+            end = (index + 1) * self.ppm
+            token_chunks.append(x[:, start:end] + self.pos_embeddings[modality])
 
-        tokens_text_cross = self.cross_tr_language(text1_tokens, text2_tokens)
-        tokens_cross = self.cross_tr_speech(tokens_text_cross, audio_tokens)
+        fused_tokens = token_chunks[0]
+        for transformer, query_tokens in zip(self.cross_transformers, token_chunks[1:]):
+            fused_tokens = transformer(fused_tokens, query_tokens)
 
-        x = tokens_cross[:, 0]
+        x = fused_tokens[:, 0]
         return self.mlp_head(x)
 
 
 if __name__ == '__main__':
     # Usage example
-    model = CascadedCrossModalTransformer(num_outputs=3, num_patches=300, dim=1024, depth=6, heads=6, mlp_dim=128)
+    model = CascadedCrossModalTransformer(
+        num_outputs=3,
+        num_patches=300,
+        dim=1024,
+        depth=6,
+        heads=6,
+        mlp_dim=128,
+        modalities=["text_en", "text_es", "audio"],
+    )
     result = model(torch.zeros((10, 300, 1024)))  # batch x tokens x dim_token
     print(result.shape)

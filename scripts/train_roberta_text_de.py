@@ -8,7 +8,7 @@ import time
 import matplotlib.pyplot as plt
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
@@ -24,52 +24,19 @@ from peft import (
 from tqdm import tqdm
 from sklearn.metrics import f1_score
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    from scripts._bootstrap import project_root
+except ModuleNotFoundError:
+    from _bootstrap import project_root
+
+PROJECT_ROOT = project_root()
 
 warnings.filterwarnings("ignore", category=UserWarning, module="bitsandbytes")
 warnings.filterwarnings("ignore", message=".*use_reentrant parameter should be passed explicitly.*")
 
 from src.data.dataset import MSP_Podcast_Dataset
-
-class TextEncoderDataset(Dataset):
-    def __init__(self, msp_dataset: MSP_Podcast_Dataset, tokenizer):
-        self.msp_dataset = msp_dataset
-        self.tokenizer = tokenizer
-        self.labels = []
-        for _, row in msp_dataset.metadata.iterrows():
-            lbl = int(row['label_id'])
-            if lbl not in [0, 1, 2]:
-                raise ValueError(f"CRITICAL: Found invalid label '{lbl}'. Must be 0, 1, or 2.")
-            self.labels.append(lbl)
-        self.encodings = self._precompute_encodings()
-
-    def _precompute_encodings(self):
-        texts = []
-        for idx in range(len(self.msp_dataset)):
-            sample = self.msp_dataset[idx]
-            text = sample.get('text_de', sample.get('text_en', ''))
-            if not text or text.strip() == "":
-                text = "[EMPTY]"
-            texts.append(text.strip())
-        print(f"Pre-tokenizing {len(texts)} texts...")
-        encodings = self.tokenizer(
-            texts,
-            truncation=True,
-            padding="max_length",
-            max_length=128,
-            return_tensors="pt",
-        )
-        return encodings
-
-    def __len__(self):
-        return len(self.labels)
-
-    def __getitem__(self, idx):
-        item = {key: val[idx].clone().detach() for key, val in self.encodings.items()}
-        item["labels"] = torch.tensor(self.labels[idx], dtype=torch.long)
-        return item
+from src.data.text_datasets import TextEncoderDataset
+from src.utils.config import get_training_config
 
 class TextOnlyTrainerDE:
     def __init__(
@@ -314,6 +281,11 @@ class TextOnlyTrainerDE:
         self._plot_training_curves(train_losses, val_losses, checkpoint_dir)
 
 def main():
+    train_config = get_training_config(
+        "roberta_text_de",
+        PROJECT_ROOT / "configs" / "training_config.json",
+    )
+
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
     transcripts_de_json = data_dir / "Transcription_de.json"
@@ -346,18 +318,32 @@ def main():
     print(f"   Train: {len(train_dataset_msp)} samples")
     print(f"   Val: {len(val_dataset_msp)} samples\n")
     trainer = TextOnlyTrainerDE()
-    train_dataset = TextEncoderDataset(train_dataset_msp, trainer.tokenizer)
-    val_dataset = TextEncoderDataset(val_dataset_msp, trainer.tokenizer)
+    train_dataset = TextEncoderDataset(
+        train_dataset_msp,
+        trainer.tokenizer,
+        text_fields=["text_de", "text_en"],
+        max_length=128,
+        padding="max_length",
+        validate_labels=True,
+    )
+    val_dataset = TextEncoderDataset(
+        val_dataset_msp,
+        trainer.tokenizer,
+        text_fields=["text_de", "text_en"],
+        max_length=128,
+        padding="max_length",
+        validate_labels=True,
+    )
     trainer.train(
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
-        num_epochs=5,
-        batch_size=256,
-        learning_rate=2e-4,
-        lora_r=16,
-        lora_alpha=32,
-        gradient_accumulation_steps=1,
+        num_epochs=int(train_config["num_epochs"]),
+        batch_size=int(train_config["batch_size"]),
+        learning_rate=float(train_config["learning_rate"]),
+        lora_r=int(train_config["lora_r"]),
+        lora_alpha=int(train_config["lora_alpha"]),
+        gradient_accumulation_steps=int(train_config["gradient_accumulation_steps"]),
         class_weights=train_dataset_msp.get_class_weights(
            all_train_labels=train_dataset_msp.metadata['label_id'].values,
            device=torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
