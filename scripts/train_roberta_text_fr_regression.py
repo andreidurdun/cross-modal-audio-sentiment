@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 try:
@@ -12,7 +13,34 @@ from src.data.text_datasets import TextRegressionDataset
 from src.utils import TextRegressionTrainer, get_training_config
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train French text backbone for regression")
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default="checkpoints/roberta_text_fr_regression",
+        help="Directorul in care se salveaza checkpoint-urile.",
+    )
+    parser.add_argument(
+        "--allow-overwrite",
+        action="store_true",
+        help="Permite suprascrierea unui director de checkpoint existent si ne-gol.",
+    )
+    return parser.parse_args()
+
+
+def ensure_checkpoint_dir_available(checkpoint_dir: Path, allow_overwrite: bool) -> None:
+    if checkpoint_dir.exists() and not checkpoint_dir.is_dir():
+        raise FileExistsError(f"Checkpoint path exists and is not a directory: {checkpoint_dir}")
+    if checkpoint_dir.exists() and any(checkpoint_dir.iterdir()) and not allow_overwrite:
+        raise FileExistsError(
+            f"Checkpoint directory already exists and is not empty: {checkpoint_dir}. "
+            "Use a different --checkpoint-dir or pass --allow-overwrite explicitly."
+        )
+
+
 def main():
+    args = parse_args()
     train_config = get_training_config(
         "roberta_text_fr_regression",
         PROJECT_ROOT / "configs" / "training_config.json",
@@ -21,12 +49,13 @@ def main():
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
     transcripts_fr_json = data_dir / "Transcription_fr.json"
-    checkpoint_dir = Path("checkpoints/roberta_text_fr_regression")
+    checkpoint_dir = Path(args.checkpoint_dir)
 
     if not labels_csv.exists():
         raise FileNotFoundError(f"Labels file not found: {labels_csv}")
     if not transcripts_fr_json.exists():
         raise FileNotFoundError(f"Transcripts JSON not found: {transcripts_fr_json}")
+    ensure_checkpoint_dir_available(checkpoint_dir, args.allow_overwrite)
 
     print("=" * 80)
     print("Loading MSP-Podcast French Text Data for Regression")

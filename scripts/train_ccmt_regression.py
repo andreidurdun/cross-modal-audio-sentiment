@@ -62,6 +62,16 @@ def resolve_embeddings_dir(embeddings_dir_arg: Optional[str], modalities: list[s
     return PROJECT_ROOT / "MSP_Podcast" / f"embeddings_{build_modality_suffix(modalities)}"
 
 
+def ensure_checkpoint_dir_available(checkpoint_dir: Path, allow_overwrite: bool) -> None:
+    if checkpoint_dir.exists() and not checkpoint_dir.is_dir():
+        raise FileExistsError(f"Checkpoint path exists and is not a directory: {checkpoint_dir}")
+    if checkpoint_dir.exists() and any(checkpoint_dir.iterdir()) and not allow_overwrite:
+        raise FileExistsError(
+            f"Checkpoint directory already exists and is not empty: {checkpoint_dir}. "
+            "Use a different --checkpoint-dir or pass --allow-overwrite explicitly."
+        )
+
+
 def collect_embedding_inputs(
     batch: dict,
     modalities: list[str],
@@ -496,6 +506,11 @@ def main():
         default=None,
         help="Directorul cu embeddings precompute. Implicit: MSP_Podcast/embeddings pentru text_en,text_es,audio, altfel MSP_Podcast/embeddings_<modalitati>",
     )
+    parser.add_argument(
+        "--allow-overwrite",
+        action="store_true",
+        help="Permite suprascrierea unui director de checkpoint existent si ne-gol.",
+    )
     args = parser.parse_args()
 
     train_config = get_training_config(
@@ -635,6 +650,7 @@ def main():
     print(f"  Test: {len(test_dataset)} samples, {len(test_loader)} batches")
 
     checkpoint_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else Path("checkpoints") / f"ccmt_multimodal_regression_{modality_suffix}"
+    ensure_checkpoint_dir_available(checkpoint_dir, args.allow_overwrite)
 
     trainer = CCMTTrainer(
         model=model,

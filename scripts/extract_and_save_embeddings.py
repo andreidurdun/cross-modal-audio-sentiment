@@ -66,6 +66,16 @@ def resolve_output_dir(output_dir_arg: str | None, modalities: list[str]) -> str
     return f"MSP_Podcast/embeddings_{build_modality_suffix(modalities)}"
 
 
+def ensure_output_dir_available(output_dir: Path, allow_overwrite: bool) -> None:
+    if output_dir.exists() and not output_dir.is_dir():
+        raise FileExistsError(f"Output path exists and is not a directory: {output_dir}")
+    if output_dir.exists() and any(output_dir.iterdir()) and not allow_overwrite:
+        raise FileExistsError(
+            f"Output directory already exists and is not empty: {output_dir}. "
+            "Use a different --output-dir or pass --allow-overwrite explicitly."
+        )
+
+
 class EmbeddingExtractor:
     
     def __init__(
@@ -686,10 +696,25 @@ def main():
         default='text_en,text_es,audio',
         help='Lista de modalitati separate prin virgula. Exemple: text_en,audio sau text_en,text_fr,audio',
     )
+    parser.add_argument(
+        '--allow-overwrite',
+        action='store_true',
+        help='Permite suprascrierea fisierelor existente din output-dir.',
+    )
     
     args = parser.parse_args()
     modalities = parse_modalities(args.modalities)
     output_dir = resolve_output_dir(args.output_dir, modalities)
+    output_dir_path = Path(output_dir)
+
+    if (args.add_german_only or args.add_val_arousal) and not args.allow_overwrite:
+        raise ValueError(
+            "Optiunile --add-german-only si --add-val-arousal modifica fisiere existente. "
+            "Ruleaza explicit cu --allow-overwrite daca asta este intentia."
+        )
+
+    if not args.add_german_only and not args.add_val_arousal:
+        ensure_output_dir_available(output_dir_path, args.allow_overwrite)
     
     # Convert projection_dim
     projection_dim = args.projection_dim if args.projection_dim > 0 else None
