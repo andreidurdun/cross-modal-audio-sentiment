@@ -715,7 +715,7 @@ def main():
         weight_decay=0.01,
         num_epochs=NUM_EPOCHS,
         checkpoint_dir=checkpoint_dir,
-        early_stopping_patience=7,
+        early_stopping_patience=5,
         gradient_accumulation_steps=GRADIENT_ACCUMULATION_STEPS,
         use_amp=USE_AMP,
         class_weights=class_weights,

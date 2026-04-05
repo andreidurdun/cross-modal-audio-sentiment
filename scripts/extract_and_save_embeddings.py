@@ -651,6 +651,18 @@ def main():
         help='Sari peste extragerea de baza si doar adauga embeddings in germana in fisierele existente.',
     )
     parser.add_argument(
+        '--en-checkpoint',
+        type=str,
+        default='checkpoints/roberta_text_en',
+        help='Calea catre checkpoint-ul pentru limba engleza',
+    )
+    parser.add_argument(
+        '--es-checkpoint',
+        type=str,
+        default='checkpoints/roberta_text_es',
+        help='Calea catre checkpoint-ul pentru limba spaniola',
+    )
+    parser.add_argument(
         '--de-checkpoint',
         type=str,
         default='checkpoints/roberta_text_de/best_model',
@@ -661,6 +673,12 @@ def main():
         type=str,
         default='checkpoints/roberta_text_fr',
         help='Calea catre checkpoint-ul pentru limba franceza',
+    )
+    parser.add_argument(
+        '--audio-checkpoint',
+        type=str,
+        default='checkpoints/wavlm_audio',
+        help='Calea catre checkpoint-ul pentru audio',
     )
     parser.add_argument(
         '--modalities',
@@ -699,8 +717,11 @@ def main():
     # Create extractor
     extractor = EmbeddingExtractor(
         output_dir=output_dir,
+        text_en_checkpoint=normalize_checkpoint_dir(args.en_checkpoint),
+        text_es_checkpoint=normalize_checkpoint_dir(args.es_checkpoint),
         text_de_checkpoint=normalize_checkpoint_dir(args.de_checkpoint),
         text_fr_checkpoint=normalize_checkpoint_dir(args.fr_checkpoint),
+        audio_checkpoint=normalize_checkpoint_dir(args.audio_checkpoint),
         projection_dim=projection_dim,
         device=args.device,
         batch_size=args.batch_size,
@@ -749,7 +770,7 @@ def main():
                 )
     
     print("\nEmbedding extraction completed successfully!")
-    print(f" Embeddings saved to: {args.output_dir}\n")
+    print(f" Embeddings saved to: {output_dir}\n")
 
 if __name__ == "__main__":
     main()
