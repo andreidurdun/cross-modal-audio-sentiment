@@ -15,12 +15,18 @@ from transformers import AutoTokenizer, DataCollatorWithPadding
 
 from src.data.audio_datasets import AudioCollator
 from src.utils.peft_audio import load_peft_audio_classification_model
-from src.utils.regression_trainers import compute_regression_metrics, denormalize_val_arousal
+from src.utils.regression_trainers import (
+    _prepare_regression_labels,
+    _prepare_regression_logits,
+    compute_regression_metrics,
+    denormalize_val_arousal,
+)
 
 
 class TextRegressionTester:
     def __init__(self, device: Optional[str] = None):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.num_labels = 2
 
     @torch.no_grad()
     def evaluate(self, model, val_loader: DataLoader) -> dict:
@@ -35,10 +41,17 @@ class TextRegressionTester:
         for batch in progress_bar:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
-            labels = batch["labels"].to(self.device, dtype=torch.float32)
+            labels = _prepare_regression_labels(
+                batch["labels"].to(self.device, dtype=torch.float32),
+                self.num_labels,
+            )
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            predictions = outputs.logits.float()
+            predictions = _prepare_regression_logits(outputs.logits, self.num_labels)
+            if predictions.shape != labels.shape:
+                raise ValueError(
+                    f"Regression output shape mismatch: predictions {tuple(predictions.shape)} vs labels {tuple(labels.shape)}"
+                )
             loss = loss_fn(predictions, labels)
 
             batch_size = labels.size(0)
@@ -112,7 +125,12 @@ class TextRegressionTester:
             raise FileNotFoundError(f"Model not found at: {best_model_path}")
 
         tokenizer = AutoTokenizer.from_pretrained(best_model_path)
-        model = AutoPeftModelForSequenceClassification.from_pretrained(best_model_path).to(self.device)
+        model = AutoPeftModelForSequenceClassification.from_pretrained(
+            best_model_path,
+            num_labels=self.num_labels,
+            problem_type="regression",
+            ignore_mismatched_sizes=True,
+        ).to(self.device)
         data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
         val_loader = DataLoader(val_dataset, batch_size=batch_size * 2, shuffle=False, collate_fn=data_collator)
         results = self.evaluate(model, val_loader)

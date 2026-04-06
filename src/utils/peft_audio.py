@@ -7,6 +7,22 @@ from peft import PeftConfig, PeftModel
 from transformers import AutoModelForAudioClassification
 
 
+def _ensure_audio_regression_head_shape(base_model, num_labels: Optional[int]) -> None:
+    if num_labels is None:
+        return
+
+    classifier = getattr(base_model, "classifier", None)
+    if isinstance(classifier, type(getattr(base_model, "classifier", None))) and hasattr(classifier, "out_features"):
+        if classifier.out_features != num_labels and hasattr(classifier, "in_features"):
+            base_model.classifier = classifier.__class__(classifier.in_features, num_labels).to(
+                device=classifier.weight.device,
+                dtype=classifier.weight.dtype,
+            )
+
+    base_model.num_labels = num_labels
+    base_model.config.num_labels = num_labels
+
+
 def load_peft_audio_classification_model(
     checkpoint_path: str | Path,
     *,
@@ -30,4 +46,5 @@ def load_peft_audio_classification_model(
 
     base_model_name = base_model_kwargs.pop("pretrained_model_name_or_path")
     base_model = AutoModelForAudioClassification.from_pretrained(base_model_name, **base_model_kwargs)
+    _ensure_audio_regression_head_shape(base_model, num_labels)
     return PeftModel.from_pretrained(base_model, checkpoint_path)

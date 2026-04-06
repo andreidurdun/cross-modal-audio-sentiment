@@ -81,6 +81,38 @@ def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[s
     }
 
 
+def _get_linear_output_dim(layer: nn.Linear) -> int:
+    weight = getattr(layer, "weight", None)
+    if isinstance(weight, torch.Tensor) and weight.ndim >= 2:
+        return int(weight.shape[0])
+    return int(layer.out_features)
+
+
+def _prepare_regression_labels(labels: torch.Tensor, num_labels: int) -> torch.Tensor:
+    if labels.ndim == 1:
+        if labels.numel() % num_labels != 0:
+            raise ValueError(
+                f"Regression labels are 1D with {labels.numel()} values; cannot reshape into target width {num_labels}."
+            )
+        return labels.reshape(-1, num_labels)
+
+    if labels.ndim != 2 or labels.shape[-1] != num_labels:
+        raise ValueError(
+            f"Regression labels shape mismatch: got {tuple(labels.shape)}, expected (*, {num_labels})."
+        )
+
+    return labels.reshape(-1, num_labels)
+
+
+def _prepare_regression_logits(logits: torch.Tensor, num_labels: int) -> torch.Tensor:
+    if logits.ndim != 2 or logits.shape[-1] != num_labels:
+        raise ValueError(
+            f"Regression logits shape mismatch: got {tuple(logits.shape)}, expected (*, {num_labels})."
+        )
+
+    return logits.float()
+
+
 class TextRegressionTrainer:
     def __init__(
         self,
@@ -93,6 +125,89 @@ class TextRegressionTrainer:
         self.id2label = {0: "valence", 1: "arousal"}
         self.label2id = {value: key for key, value in self.id2label.items()}
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    def _replace_linear_layer(self, layer: nn.Linear) -> nn.Linear:
+        new_layer = nn.Linear(
+            in_features=layer.in_features,
+            out_features=self.num_labels,
+            bias=layer.bias is not None,
+        )
+        nn.init.normal_(new_layer.weight, mean=0.0, std=0.02)
+        if new_layer.bias is not None:
+            nn.init.zeros_(new_layer.bias)
+        return new_layer.to(device=layer.weight.device, dtype=layer.weight.dtype)
+
+    def _replace_nested_linear_layer(self, module: nn.Module, attribute_name: str) -> bool:
+        layer = getattr(module, attribute_name, None)
+        if not isinstance(layer, nn.Linear):
+            return False
+        if _get_linear_output_dim(layer) == self.num_labels:
+            return False
+        setattr(module, attribute_name, self._replace_linear_layer(layer))
+        return True
+
+    def _iter_wrapped_modules(self, module: nn.Module) -> list[nn.Module]:
+        modules = [module]
+
+        original_module = getattr(module, "original_module", None)
+        if isinstance(original_module, nn.Module):
+            modules.append(original_module)
+
+        modules_to_save = getattr(module, "modules_to_save", None)
+        if isinstance(modules_to_save, nn.ModuleDict):
+            modules.extend(list(modules_to_save.values()))
+
+        return modules
+
+    def _ensure_regression_head_shape(self, model):
+        head_replaced = False
+
+        classifier = getattr(model, "classifier", None)
+        if isinstance(classifier, nn.Linear):
+            if _get_linear_output_dim(classifier) != self.num_labels:
+                model.classifier = self._replace_linear_layer(classifier)
+                head_replaced = True
+        elif classifier is not None:
+            for classifier_module in self._iter_wrapped_modules(classifier):
+                head_replaced = self._replace_nested_linear_layer(classifier_module, "out_proj") or head_replaced
+
+        score = getattr(model, "score", None)
+        if isinstance(score, nn.Linear) and _get_linear_output_dim(score) != self.num_labels:
+            model.score = self._replace_linear_layer(score)
+            head_replaced = True
+        elif score is not None:
+            for score_module in self._iter_wrapped_modules(score):
+                if isinstance(score_module, nn.Linear) and _get_linear_output_dim(score_module) != self.num_labels:
+                    replacement = self._replace_linear_layer(score_module)
+                    if score_module is score:
+                        model.score = replacement
+                    head_replaced = True
+
+        if not head_replaced:
+            output_dim = None
+            classifier = getattr(model, "classifier", None)
+            if isinstance(classifier, nn.Linear):
+                output_dim = _get_linear_output_dim(classifier)
+            elif classifier is not None:
+                for classifier_module in self._iter_wrapped_modules(classifier):
+                    out_proj = getattr(classifier_module, "out_proj", None)
+                    if isinstance(out_proj, nn.Linear):
+                        output_dim = _get_linear_output_dim(out_proj)
+                        break
+            elif isinstance(getattr(model, "score", None), nn.Linear):
+                output_dim = _get_linear_output_dim(model.score)
+
+            if output_dim is not None and output_dim != self.num_labels:
+                raise ValueError(
+                    f"Unsupported classification head output size {output_dim}; expected {self.num_labels}."
+                )
+
+        model.num_labels = self.num_labels
+        model.config.num_labels = self.num_labels
+        model.config.id2label = dict(self.id2label)
+        model.config.label2id = dict(self.label2id)
+        model.config.problem_type = "regression"
+        return model
 
     def setup_model_with_lora(self, lora_r: int = 16, lora_alpha: int = 32):
         print("Configuring 4-bit Quantization...")
@@ -115,6 +230,7 @@ class TextRegressionTrainer:
             quantization_config=bnb_config,
         )
 
+        model = self._ensure_regression_head_shape(model)
         model = prepare_model_for_kbit_training(model)
         model.config.use_cache = False
 
@@ -130,6 +246,7 @@ class TextRegressionTrainer:
         )
 
         model = get_peft_model(model, lora_config)
+        model = self._ensure_regression_head_shape(model)
         model.print_trainable_parameters()
         return model.to(self.device)
 
@@ -143,10 +260,18 @@ class TextRegressionTrainer:
         for step, batch in enumerate(progress_bar):
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
-            labels = batch["labels"].to(self.device, dtype=torch.float32)
+            labels = _prepare_regression_labels(
+                batch["labels"].to(self.device, dtype=torch.float32),
+                self.num_labels,
+            )
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            loss = loss_fn(outputs.logits.float(), labels)
+            predictions = _prepare_regression_logits(outputs.logits, self.num_labels)
+            if predictions.shape != labels.shape:
+                raise ValueError(
+                    f"Regression output shape mismatch: predictions {tuple(predictions.shape)} vs labels {tuple(labels.shape)}"
+                )
+            loss = loss_fn(predictions, labels)
             loss = loss / gradient_accumulation_steps
             loss.backward()
 
@@ -175,10 +300,17 @@ class TextRegressionTrainer:
         for batch in progress_bar:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
-            labels = batch["labels"].to(self.device, dtype=torch.float32)
+            labels = _prepare_regression_labels(
+                batch["labels"].to(self.device, dtype=torch.float32),
+                self.num_labels,
+            )
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-            predictions = outputs.logits.float()
+            predictions = _prepare_regression_logits(outputs.logits, self.num_labels)
+            if predictions.shape != labels.shape:
+                raise ValueError(
+                    f"Regression output shape mismatch: predictions {tuple(predictions.shape)} vs labels {tuple(labels.shape)}"
+                )
             loss = loss_fn(predictions, labels)
 
             batch_size = labels.size(0)
@@ -320,6 +452,26 @@ class AudioRegressionTrainer:
         self.label2id = {value: key for key, value in self.id2label.items()}
         self.feature_extractor = AutoFeatureExtractor.from_pretrained(model_name)
 
+    def _ensure_regression_head_shape(self, model):
+        classifier = getattr(model, "classifier", None)
+        if isinstance(classifier, nn.Linear) and _get_linear_output_dim(classifier) != self.num_labels:
+            model.classifier = nn.Linear(
+                in_features=classifier.in_features,
+                out_features=self.num_labels,
+                bias=classifier.bias is not None,
+            ).to(device=classifier.weight.device, dtype=classifier.weight.dtype)
+        elif classifier is not None and hasattr(classifier, "out_features") and classifier.out_features != self.num_labels:
+            raise ValueError(
+                f"Unsupported audio classification head output size {classifier.out_features}; expected {self.num_labels}."
+            )
+
+        model.num_labels = self.num_labels
+        model.config.num_labels = self.num_labels
+        model.config.id2label = dict(self.id2label)
+        model.config.label2id = dict(self.label2id)
+        model.config.problem_type = "regression"
+        return model
+
     def setup_model_with_lora(self, lora_r: int = 16, lora_alpha: int = 32):
         print("Loading base model in native precision...")
         model = AutoModelForAudioClassification.from_pretrained(
@@ -332,6 +484,7 @@ class AudioRegressionTrainer:
             torch_dtype=torch.float32,
         )
 
+        model = self._ensure_regression_head_shape(model)
         model.config.use_cache = False
         print("Configuring LoRA...")
         lora_config = LoraConfig(
@@ -365,8 +518,13 @@ class AudioRegressionTrainer:
             autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type="cuda") if use_amp else nullcontext()
             with autocast_ctx:
                 outputs = model(input_values=input_values, attention_mask=attention_mask)
-                logits = outputs.logits.float().view(-1, self.num_labels)
-                loss = loss_fn(logits, labels.view(-1, self.num_labels))
+                logits = _prepare_regression_logits(outputs.logits, self.num_labels)
+                labels_view = _prepare_regression_labels(labels, self.num_labels)
+                if logits.shape != labels_view.shape:
+                    raise ValueError(
+                        f"Regression output shape mismatch: predictions {tuple(logits.shape)} vs labels {tuple(labels_view.shape)}"
+                    )
+                loss = loss_fn(logits, labels_view)
 
             loss = loss / gradient_accumulation_steps
             if use_amp:
@@ -412,8 +570,12 @@ class AudioRegressionTrainer:
             autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type="cuda") if use_amp else nullcontext()
             with autocast_ctx:
                 outputs = model(input_values=input_values, attention_mask=attention_mask)
-                logits = outputs.logits.float().view(-1, self.num_labels)
-                labels_view = labels.view(-1, self.num_labels)
+                logits = _prepare_regression_logits(outputs.logits, self.num_labels)
+                labels_view = _prepare_regression_labels(labels, self.num_labels)
+                if logits.shape != labels_view.shape:
+                    raise ValueError(
+                        f"Regression output shape mismatch: predictions {tuple(logits.shape)} vs labels {tuple(labels_view.shape)}"
+                    )
                 loss = loss_fn(logits, labels_view)
 
             batch_size = labels_view.size(0)
