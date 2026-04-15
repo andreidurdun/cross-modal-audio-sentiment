@@ -32,7 +32,7 @@ class NLLBTranslatorConfigDE(NLLBTranslatorConfig):
 
 
 class NLLBTranslator:
-    """Optimized wrapper around Meta's NLLB model for RTX 4000 series."""
+    """Optimized wrapper around Meta's NLLB model."""
 
     def __init__(self, config: Optional[NLLBTranslatorConfig] = None) -> None:
         self.config = config or NLLBTranslatorConfig()

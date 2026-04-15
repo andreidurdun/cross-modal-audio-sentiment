@@ -63,6 +63,7 @@ def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[s
     pearson = safe_pearsonr(y_true, y_pred)
     mse_per_target = np.mean((y_true - y_pred) ** 2, axis=0)
     mae_per_target = np.mean(np.abs(y_true - y_pred), axis=0)
+    r2_per_target = r2_score(y_true, y_pred, multioutput="raw_values")
     return {
         "mse": float(mean_squared_error(y_true, y_pred)),
         "mae": float(mean_absolute_error(y_true, y_pred)),
@@ -72,6 +73,8 @@ def compute_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict[s
         "mse_arousal": float(mse_per_target[1]),
         "mae_valence": float(mae_per_target[0]),
         "mae_arousal": float(mae_per_target[1]),
+        "r2_valence": float(r2_per_target[0]),
+        "r2_arousal": float(r2_per_target[1]),
         "ccc_valence": ccc["valence"],
         "ccc_arousal": ccc["arousal"],
         "ccc_mean": ccc["mean"],

@@ -1,5 +1,5 @@
 """
-Script de testare pentru modelul RoBERTa Text ES.
+Script de testare pentru modelul Text ES.
 Evalueaza pe datele de validare si salveaza scorurile si graficele.
 """
 

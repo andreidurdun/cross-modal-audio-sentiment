@@ -1,6 +1,6 @@
 from pathlib import Path
 import sys
-from typing import Optional
+from typing import Any, Optional
 import json
 from datetime import datetime
 import time
@@ -81,7 +81,7 @@ def collect_embedding_inputs(
     inputs = {}
     for modality in modalities:
         tensor = batch[f"{modality}_emb"]
-        kwargs = {"non_blocking": True}
+        kwargs: dict[str, Any] = {"non_blocking": True}
         if amp_dtype is not None:
             kwargs["dtype"] = amp_dtype
         inputs[f"{modality}_emb"] = tensor.to(device, **kwargs)
@@ -105,6 +105,31 @@ def concordance_correlation_coefficient(y_true, y_pred):
             'mean': float(np.mean(ccc))
         }
     return {'valence': float(ccc), 'arousal': float(ccc), 'mean': float(ccc)}
+
+
+def compute_regression_metrics(y_true, y_pred) -> dict[str, float]:
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    mse_per_target = mean_squared_error(y_true, y_pred, multioutput="raw_values")
+    mae_per_target = mean_absolute_error(y_true, y_pred, multioutput="raw_values")
+    r2_per_target = r2_score(y_true, y_pred, multioutput="raw_values")
+    ccc = concordance_correlation_coefficient(y_true, y_pred)
+
+    return {
+        'mse': float(mean_squared_error(y_true, y_pred)),
+        'mse_valence': float(mse_per_target[0]),
+        'mse_arousal': float(mse_per_target[1]),
+        'mae': float(mean_absolute_error(y_true, y_pred)),
+        'mae_valence': float(mae_per_target[0]),
+        'mae_arousal': float(mae_per_target[1]),
+        'r2': float(r2_score(y_true, y_pred)),
+        'r2_valence': float(r2_per_target[0]),
+        'r2_arousal': float(r2_per_target[1]),
+        'ccc_valence': ccc['valence'],
+        'ccc_arousal': ccc['arousal'],
+        'ccc_mean': ccc['mean'],
+    }
 
 
 class CCMTTrainer:
@@ -266,18 +291,10 @@ class CCMTTrainer:
         all_preds = np.concatenate(all_preds, axis=0)
         all_labels = np.concatenate(all_labels, axis=0)
         epoch_loss = total_loss / len(self.train_loader)
-        mse = mean_squared_error(all_labels, all_preds)
-        mae = mean_absolute_error(all_labels, all_preds)
-        r2 = r2_score(all_labels, all_preds)
-        ccc = concordance_correlation_coefficient(all_labels, all_preds)
+        metrics = compute_regression_metrics(all_labels, all_preds)
         return {
             'loss': epoch_loss,
-            'mse': mse,
-            'mae': mae,
-            'r2': r2,
-            'ccc_valence': ccc['valence'],
-            'ccc_arousal': ccc['arousal'],
-            'ccc_mean': ccc['mean'],
+            **metrics,
         }
 
     @torch.no_grad()
@@ -311,18 +328,10 @@ class CCMTTrainer:
         # Denormalize predictions and labels for MAE/MSE/R2/CCC
         denorm_preds = PrecomputedEmbeddingsDataset.denormalize_val_arousal(torch.from_numpy(all_preds)).numpy()
         denorm_labels = PrecomputedEmbeddingsDataset.denormalize_val_arousal(torch.from_numpy(all_labels)).numpy()
-        mse = mean_squared_error(denorm_labels, denorm_preds)
-        mae = mean_absolute_error(denorm_labels, denorm_preds)
-        r2 = r2_score(denorm_labels, denorm_preds)
-        ccc = concordance_correlation_coefficient(denorm_labels, denorm_preds)
+        metrics = compute_regression_metrics(denorm_labels, denorm_preds)
         return {
             'loss': epoch_loss,
-            'mse': mse,
-            'mae': mae,
-            'r2': r2,
-            'ccc_valence': ccc['valence'],
-            'ccc_arousal': ccc['arousal'],
-            'ccc_mean': ccc['mean'],
+            **metrics,
             'predictions': denorm_preds,
             'labels': denorm_labels,
         }
@@ -341,8 +350,30 @@ class CCMTTrainer:
             val_metrics = self.evaluate(self.val_loader, desc="Validation")
             self.history['train_loss'].append(train_metrics['loss'])
             self.history['val_loss'].append(val_metrics['loss'])
-            print(f"\nTrain - Loss: {train_metrics['loss']:.4f}, MSE: {train_metrics['mse']:.4f}, MAE: {train_metrics['mae']:.4f}, R2: {train_metrics['r2']:.4f}, CCC(val): {train_metrics['ccc_valence']:.4f}, CCC(ar): {train_metrics['ccc_arousal']:.4f}, CCC(mean): {train_metrics['ccc_mean']:.4f}")
-            print(f"Val   - Loss: {val_metrics['loss']:.4f}, MSE: {val_metrics['mse']:.4f}, MAE: {val_metrics['mae']:.4f}, R2: {val_metrics['r2']:.4f}, CCC(val): {val_metrics['ccc_valence']:.4f}, CCC(ar): {val_metrics['ccc_arousal']:.4f}, CCC(mean): {val_metrics['ccc_mean']:.4f}")
+            print(
+                f"\nTrain - Loss: {train_metrics['loss']:.4f}, "
+                f"MSE: {train_metrics['mse']:.4f} "
+                f"(val: {train_metrics['mse_valence']:.4f}, ar: {train_metrics['mse_arousal']:.4f}), "
+                f"MAE: {train_metrics['mae']:.4f} "
+                f"(val: {train_metrics['mae_valence']:.4f}, ar: {train_metrics['mae_arousal']:.4f}), "
+                f"R2: {train_metrics['r2']:.4f} "
+                f"(val: {train_metrics['r2_valence']:.4f}, ar: {train_metrics['r2_arousal']:.4f}), "
+                f"CCC(val): {train_metrics['ccc_valence']:.4f}, "
+                f"CCC(ar): {train_metrics['ccc_arousal']:.4f}, "
+                f"CCC(mean): {train_metrics['ccc_mean']:.4f}"
+            )
+            print(
+                f"Val   - Loss: {val_metrics['loss']:.4f}, "
+                f"MSE: {val_metrics['mse']:.4f} "
+                f"(val: {val_metrics['mse_valence']:.4f}, ar: {val_metrics['mse_arousal']:.4f}), "
+                f"MAE: {val_metrics['mae']:.4f} "
+                f"(val: {val_metrics['mae_valence']:.4f}, ar: {val_metrics['mae_arousal']:.4f}), "
+                f"R2: {val_metrics['r2']:.4f} "
+                f"(val: {val_metrics['r2_valence']:.4f}, ar: {val_metrics['r2_arousal']:.4f}), "
+                f"CCC(val): {val_metrics['ccc_valence']:.4f}, "
+                f"CCC(ar): {val_metrics['ccc_arousal']:.4f}, "
+                f"CCC(mean): {val_metrics['ccc_mean']:.4f}"
+            )
             if val_metrics['loss'] < self.best_val_loss:
                 self.best_val_loss = val_metrics['loss']
                 self.best_epoch = epoch
@@ -367,8 +398,14 @@ class CCMTTrainer:
         print(f"\nTest Results:")
         print(f"  Loss: {test_metrics_full['loss']:.4f}")
         print(f"  MSE: {test_metrics_full['mse']:.4f}")
+        print(f"  MSE valence: {test_metrics_full['mse_valence']:.4f}")
+        print(f"  MSE arousal: {test_metrics_full['mse_arousal']:.4f}")
         print(f"  MAE: {test_metrics_full['mae']:.4f}")
+        print(f"  MAE valence: {test_metrics_full['mae_valence']:.4f}")
+        print(f"  MAE arousal: {test_metrics_full['mae_arousal']:.4f}")
         print(f"  R2: {test_metrics_full['r2']:.4f}")
+        print(f"  R2 valence: {test_metrics_full['r2_valence']:.4f}")
+        print(f"  R2 arousal: {test_metrics_full['r2_arousal']:.4f}")
         print(f"  CCC(val): {test_metrics_full['ccc_valence']:.4f}")
         print(f"  CCC(ar): {test_metrics_full['ccc_arousal']:.4f}")
         print(f"  CCC(mean): {test_metrics_full['ccc_mean']:.4f}")
@@ -410,15 +447,10 @@ class CCMTTrainer:
         """Calculeaza metrici de regresie pentru best model."""
         y_true = test_metrics['labels']
         y_pred = test_metrics['predictions']
-        ccc = concordance_correlation_coefficient(y_true, y_pred)
+        metrics = compute_regression_metrics(y_true, y_pred)
         return {
             'loss': test_metrics['loss'],
-            'mse': mean_squared_error(y_true, y_pred),
-            'mae': mean_absolute_error(y_true, y_pred),
-            'r2': r2_score(y_true, y_pred),
-            'ccc_valence': ccc['valence'],
-            'ccc_arousal': ccc['arousal'],
-            'ccc_mean': ccc['mean'],
+            **metrics,
             'num_samples': len(y_true),
         }
 
@@ -594,7 +626,7 @@ def main():
         modalities=modalities,
     )
     
-    # Compilare model (PyTorch 2.0+) - experimental, lasat False din setari
+
     if USE_COMPILE and hasattr(torch, 'compile'):
         print("Compiling model with torch.compile()...")
         model = torch.compile(model, mode='default')
@@ -619,7 +651,7 @@ def main():
         modalities=modalities,
     )
     
-    # Cream DataLoaders (Am lasat num_workers=0, standard pentru stabilitate pe Windows la citire din memorie)
+   
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,

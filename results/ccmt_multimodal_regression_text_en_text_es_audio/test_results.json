@@ -1,0 +1,29 @@
+{
+  "mse": 0.7054417133331299,
+  "mae": 0.6606472134590149,
+  "rmse": 0.839905776461342,
+  "r2": 0.2963029742240906,
+  "mse_valence": 0.778435468673706,
+  "mse_arousal": 0.6324480175971985,
+  "mae_valence": 0.6991714239120483,
+  "mae_arousal": 0.6221230030059814,
+  "r2_valence": 0.33644312620162964,
+  "r2_arousal": 0.2561628222465515,
+  "ccc_valence": 0.48453858494758606,
+  "ccc_arousal": 0.4674425423145294,
+  "ccc_mean": 0.47599056363105774,
+  "pearson_valence": 0.5864290682944246,
+  "pearson_arousal": 0.5225811617704763,
+  "pearson_mean": 0.5545051150324505,
+  "avg_loss": 0.019595701575348328,
+  "rmse_valence": 0.8822899005846695,
+  "rmse_arousal": 0.7952660043012014,
+  "num_samples": 34399,
+  "partition": "val",
+  "modalities": [
+    "text_en",
+    "text_es",
+    "audio"
+  ],
+  "checkpoint_dir": "c:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\regression_pipeline\\20260406_215516\\ccmt_multimodal_regression_text_en_text_es_audio"
+}
