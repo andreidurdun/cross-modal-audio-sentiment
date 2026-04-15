@@ -54,7 +54,7 @@ def main() -> None:
         for key, translated_text in zip(batch_keys, batch_translated):
             translated[key] = translated_text
             
-        # Un mic log pentru a vedea progresul (optional, dar foarte util)
+   
         if (i + BATCH_SIZE) % (BATCH_SIZE * 10) == 0 or i + BATCH_SIZE >= total_items:
             current_count = min(i + BATCH_SIZE, total_items)
             print(f"Progress: {current_count}/{total_items} ({(current_count/total_items)*100:.1f}%)")
