@@ -76,6 +76,12 @@ def ensure_output_dir_available(output_dir: Path, allow_overwrite: bool) -> None
         )
 
 
+def parse_reuse_dirs(reuse_from_arg: str | None) -> list[str]:
+    if not reuse_from_arg:
+        return []
+    return [item.strip() for item in reuse_from_arg.split(';') if item.strip()]
+
+
 class EmbeddingExtractor:
     
     def __init__(
@@ -91,6 +97,7 @@ class EmbeddingExtractor:
         device: str = "cuda",
         batch_size: int = 32,
         modalities: Optional[List[str]] = None,
+        reuse_from_dirs: Optional[List[str]] = None,
     ):
         """
         Args:
@@ -109,6 +116,7 @@ class EmbeddingExtractor:
         self.projection_dim = projection_dim
         self.dataset_root = Path(dataset_root)
         self.modalities = list(modalities or ["text_en", "text_es", "audio"])
+        self.reuse_from_dirs = [Path(path) for path in (reuse_from_dirs or [])]
         
         print("\n" + "="*80)
         print("EMBEDDING EXTRACTOR INITIALIZATION")
@@ -143,8 +151,53 @@ class EmbeddingExtractor:
         print(f"  Device: {device}")
         print(f"  Batch size: {batch_size}")
         print(f"  Output dir: {self.output_dir}")
+        if self.reuse_from_dirs:
+            print(f"  Reuse from dirs: {[str(path) for path in self.reuse_from_dirs]}")
         print("="*80 + "\n")
     
+    def _load_reusable_partition_embeddings(
+        self,
+        partition: str,
+        file_ids: list[str],
+    ) -> dict[str, torch.Tensor]:
+        reusable: dict[str, torch.Tensor] = {}
+        if not self.reuse_from_dirs:
+            return reusable
+
+        target_file_ids = [str(file_id) for file_id in file_ids]
+        for reuse_dir in self.reuse_from_dirs:
+            embeddings_path = Path(reuse_dir) / f"embeddings_{partition}.pt"
+            if not embeddings_path.exists():
+                continue
+
+            data = torch.load(embeddings_path, map_location="cpu")
+            source_file_ids = [str(file_id) for file_id in data.get("file_ids", [])]
+            if not source_file_ids:
+                continue
+
+            index_lookup = {file_id: idx for idx, file_id in enumerate(source_file_ids)}
+            if any(file_id not in index_lookup for file_id in target_file_ids):
+                print(f"Skipping reuse from {embeddings_path} because file_ids do not align.")
+                continue
+
+            selection = torch.tensor([index_lookup[file_id] for file_id in target_file_ids], dtype=torch.long)
+            reused_here = []
+            for modality in self.modalities:
+                if modality in reusable or modality not in data:
+                    continue
+                tensor = data[modality]
+                if isinstance(tensor, torch.Tensor) and tensor.shape[0] == len(source_file_ids):
+                    reusable[modality] = tensor.index_select(0, selection)
+                    reused_here.append(modality)
+
+            if reused_here:
+                print(f"Reusing modalities {reused_here} from {embeddings_path}")
+
+            if len(reusable) == len(self.modalities):
+                break
+
+        return reusable
+
     def extract_embeddings_for_partition(
         self,
         partition: str,
@@ -209,35 +262,47 @@ class EmbeddingExtractor:
                 "Check Split_Set values in labels_consensus.csv."
             )
         
+        partition_file_ids = [str(file_id) for file_id in dataset.metadata['FileName'].tolist()]
+        reusable_embeddings = self._load_reusable_partition_embeddings(partition, partition_file_ids)
+
         # Storage
         all_embeddings = {
             **{modality: [] for modality in self.modalities},
             'labels': [],
             'file_ids': [],
+            'valence': [],
+            'arousal': [],
         }
         
         # Process în batches
         num_batches = (len(dataset) + self.batch_size - 1) // self.batch_size
-        
+        text_modalities_to_compute = [
+            modality for modality in self.modalities
+            if modality.startswith("text_") and modality not in reusable_embeddings
+        ]
+        audio_needs_compute = "audio" in self.modalities and "audio" not in reusable_embeddings
+
         with torch.no_grad():
             for batch_idx in tqdm(range(num_batches), desc=f"Processing {partition}"):
                 start_idx = batch_idx * self.batch_size
                 end_idx = min(start_idx + self.batch_size, len(dataset))
                 
                 # Collect batch data
-                batch_texts = {
-                    modality: [] for modality in self.modalities if modality.startswith("text_")
-                }
+                batch_texts = {modality: [] for modality in text_modalities_to_compute}
                 batch_audios = []
                 batch_labels = []
                 batch_file_ids = []
                 
                 for idx in range(start_idx, end_idx):
-                    sample = dataset[idx]
-                    for modality in batch_texts:
-                        batch_texts[modality].append(sample[modality])
+                    row = dataset.metadata.iloc[idx]
+                    file_id = str(row['FileName'])
+                    file_id_key = str(row['file_id_key'])
 
-                    if "audio" in self.modalities:
+                    for modality in batch_texts:
+                        batch_texts[modality].append(dataset.transcript_caches[modality].get(file_id_key, ""))
+
+                    if audio_needs_compute:
+                        sample = dataset[idx]
                         audio = sample['audio'].numpy() if isinstance(sample['audio'], torch.Tensor) else sample['audio']
                         if np.isnan(audio).any() or np.isinf(audio).any():
                             audio = np.zeros_like(audio)
@@ -247,17 +312,25 @@ class EmbeddingExtractor:
                             audio = audio[..., :max_samples]
 
                         batch_audios.append(audio)
-                    batch_labels.append(sample['label'])
-                    batch_file_ids.append(sample.get('file_id', f'{partition}_{idx}'))
+
+                    batch_labels.append(int(row['label_id']))
+                    batch_file_ids.append(file_id)
+                    all_embeddings['valence'].append(float(row['EmoVal']))
+                    all_embeddings['arousal'].append(float(row['EmoAct']))
                 
                 batch_embeddings = {}
-                for modality, texts in batch_texts.items():
-                    batch_embeddings[modality] = self._pad_or_truncate(
-                        self.backbones[modality](texts),
-                        target_len=100,
-                    ).cpu()
+                for modality in self.modalities:
+                    if modality in reusable_embeddings:
+                        batch_embeddings[modality] = reusable_embeddings[modality][start_idx:end_idx].cpu()
+                        continue
 
-                if "audio" in self.modalities:
+                    if modality.startswith("text_"):
+                        batch_embeddings[modality] = self._pad_or_truncate(
+                            self.backbones[modality](batch_texts[modality]),
+                            target_len=100,
+                        ).cpu()
+
+                if audio_needs_compute:
                     batch_embeddings['audio'] = self._pad_or_truncate(
                         self._extract_audio_embeddings_batch(batch_audios),
                         target_len=100,
@@ -286,6 +359,8 @@ class EmbeddingExtractor:
             },
             'labels': torch.tensor(all_embeddings['labels'], dtype=torch.long),
             'file_ids': all_embeddings['file_ids'],
+            'valence': torch.tensor(all_embeddings['valence'], dtype=torch.float32),
+            'arousal': torch.tensor(all_embeddings['arousal'], dtype=torch.float32),
             'metadata': {
                 'partition': partition,
                 'num_samples': len(dataset),
@@ -576,42 +651,62 @@ class EmbeddingLoader:
         
         return all_embeddings
 
-def update_embeddings_with_val_arousal():
+def update_embeddings_with_val_arousal(output_dir: str | Path = 'MSP_Podcast/embeddings'):
     """
-    Adaugă valorile valence (EmoVal) și arousal (EmoAct) din labels_consensus.json
-    în embeddings_train.pt și embeddings_val.pt, fără a regenera embeddingurile.
+    Adaugă valorile valence (EmoVal) și arousal (EmoAct) din labels_consensus.csv
+    în fișierele de embeddings existente, fără a regenera embeddingurile.
     """
+    import csv
     import torch
-    import json
     from pathlib import Path
 
-    def add_val_arousal(embeddings_path, labels_json_path):
+    def build_label_lookup(labels_csv_path: Path) -> dict[str, tuple[float, float]]:
+        lookup: dict[str, tuple[float, float]] = {}
+        with labels_csv_path.open('r', encoding='utf-8') as file_handle:
+            reader = csv.DictReader(file_handle)
+            for row in reader:
+                file_name = str(row['FileName'])
+                values = (float(row['EmoVal']), float(row['EmoAct']))
+                lookup[file_name] = values
+                if file_name.endswith('.wav'):
+                    lookup[file_name[:-4]] = values
+        return lookup
+
+    def add_val_arousal(embeddings_path: Path, label_lookup: dict[str, tuple[float, float]]):
+        if not embeddings_path.exists():
+            print(f"Skipping missing file: {embeddings_path}")
+            return
+
         print(f"Processing {embeddings_path} ...")
         data = torch.load(embeddings_path, map_location='cpu')
-        with open(labels_json_path, 'r') as f:
-            labels = json.load(f)
+        if 'valence' in data and 'arousal' in data:
+            print(f"✓ {embeddings_path} already contains valence/arousal.")
+            return
 
         file_ids = data['file_ids']
         valence = []
         arousal = []
         for file_id in file_ids:
-            key = file_id
-            if key not in labels and not key.endswith('.wav'):
-                key = key + '.wav'
-            if key not in labels:
-                raise KeyError(f"Nu am găsit {file_id} în labels_consensus.json")
-            valence.append(labels[key]['EmoVal'])
-            arousal.append(labels[key]['EmoAct'])
+            key = str(file_id)
+            if key not in label_lookup:
+                raise KeyError(f"Nu am găsit {file_id} în labels_consensus.csv")
+            emo_val, emo_act = label_lookup[key]
+            valence.append(emo_val)
+            arousal.append(emo_act)
 
         data['valence'] = torch.tensor(valence, dtype=torch.float32)
         data['arousal'] = torch.tensor(arousal, dtype=torch.float32)
         torch.save(data, embeddings_path)
         print(f"✓ Updated {embeddings_path} with valence/arousal.")
 
-    base = Path('MSP_Podcast/embeddings')
-    labels_json = Path('MSP_Podcast/Labels/labels_consensus.json')
-    add_val_arousal(base / 'embeddings_train.pt', labels_json)
-    add_val_arousal(base / 'embeddings_val.pt', labels_json)
+    base = Path(output_dir)
+    labels_csv = Path('MSP_Podcast/Labels/labels_consensus.csv')
+    if not labels_csv.exists():
+        raise FileNotFoundError(f"Labels CSV not found: {labels_csv}")
+
+    label_lookup = build_label_lookup(labels_csv)
+    for partition in ('train', 'val', 'test1'):
+        add_val_arousal(base / f'embeddings_{partition}.pt', label_lookup)
 
 def main():
     parser = argparse.ArgumentParser(description="Extract and save embeddings from backbones")
@@ -701,11 +796,18 @@ def main():
         action='store_true',
         help='Permite suprascrierea fisierelor existente din output-dir.',
     )
+    parser.add_argument(
+        '--reuse-from',
+        type=str,
+        default=None,
+        help='Lista de directoare de embeddings separate prin ; din care se pot reutiliza modalitatile deja extrase.',
+    )
     
     args = parser.parse_args()
     modalities = parse_modalities(args.modalities)
     output_dir = resolve_output_dir(args.output_dir, modalities)
     output_dir_path = Path(output_dir)
+    reuse_from_dirs = parse_reuse_dirs(args.reuse_from)
 
     if (args.add_german_only or args.add_val_arousal) and not args.allow_overwrite:
         raise ValueError(
@@ -730,13 +832,14 @@ def main():
     print(f"Modalities: {modalities}")
     print(f"Save individually: {args.save_individually}")
     print(f"Add German Only: {args.add_german_only}")
+    print(f"Reuse from dirs: {reuse_from_dirs}")
     print("="*80 + "\n")
     
 
     # Dacă se cere doar adăugarea valence/arousal, rulează utilitarul și oprește
     if args.add_val_arousal:
-        update_embeddings_with_val_arousal()
-        print("\nValence/arousal adăugate cu succes în embeddings_train.pt și embeddings_val.pt!\n")
+        update_embeddings_with_val_arousal(output_dir)
+        print("\nValence/arousal adăugate cu succes în fișierele de embeddings disponibile!\n")
         return
 
     # Create extractor
@@ -751,6 +854,7 @@ def main():
         device=args.device,
         batch_size=args.batch_size,
         modalities=modalities,
+        reuse_from_dirs=reuse_from_dirs,
     )
 
     # Extract embeddings logic

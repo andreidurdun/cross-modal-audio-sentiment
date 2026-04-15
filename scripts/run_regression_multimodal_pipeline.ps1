@@ -145,7 +145,9 @@ function Assert-StepComplete {
         [string]$Description,
 
         [Parameter(Mandatory = $true)]
-        [string[]]$RequiredPaths
+        [string[]]$RequiredPaths,
+
+        [switch]$SuggestResumeWithoutSkipEmbeddings
     )
 
     $state = Get-StepState -TargetDir $TargetDir -RequiredPaths $RequiredPaths
@@ -159,6 +161,10 @@ function Assert-StepComplete {
 
     if ($state -eq 'invalid') {
         throw "$Description are o cale invalida (nu este director): $TargetDir"
+    }
+
+    if ($SuggestResumeWithoutSkipEmbeddings) {
+        throw "$Description nu exista: $TargetDir`nRuleaza din nou cu -Resume -SkipBackbones -RunName $RunName, fara -SkipEmbeddings."
     }
 
     throw "$Description nu exista: $TargetDir"
@@ -256,6 +262,7 @@ $combinations = @(
         Modalities = 'text_en,text_es,audio'
         EmbeddingsDir = (Join-Path $embeddingsRoot 'embeddings_text_en_text_es_audio')
         CcmtCheckpointDir = (Join-Path $checkpointRoot 'ccmt_multimodal_regression_text_en_text_es_audio')
+        ReuseFrom = @()
         EmbeddingsCompletionFiles = @(
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_text_es_audio') 'embeddings_train.pt'),
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_text_es_audio') 'embeddings_val.pt'),
@@ -274,6 +281,9 @@ $combinations = @(
         Modalities = 'text_en,audio'
         EmbeddingsDir = (Join-Path $embeddingsRoot 'embeddings_text_en_audio')
         CcmtCheckpointDir = (Join-Path $checkpointRoot 'ccmt_multimodal_regression_text_en_audio')
+        ReuseFrom = @(
+            (Join-Path $embeddingsRoot 'embeddings_text_en_text_es_audio')
+        )
         EmbeddingsCompletionFiles = @(
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_audio') 'embeddings_train.pt'),
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_audio') 'embeddings_val.pt'),
@@ -292,6 +302,10 @@ $combinations = @(
         Modalities = 'text_en,text_de,audio'
         EmbeddingsDir = (Join-Path $embeddingsRoot 'embeddings_text_en_text_de_audio')
         CcmtCheckpointDir = (Join-Path $checkpointRoot 'ccmt_multimodal_regression_text_en_text_de_audio')
+        ReuseFrom = @(
+            (Join-Path $embeddingsRoot 'embeddings_text_en_audio'),
+            (Join-Path $embeddingsRoot 'embeddings_text_en_text_es_audio')
+        )
         EmbeddingsCompletionFiles = @(
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_text_de_audio') 'embeddings_train.pt'),
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_text_de_audio') 'embeddings_val.pt'),
@@ -310,6 +324,10 @@ $combinations = @(
         Modalities = 'text_en,text_fr,audio'
         EmbeddingsDir = (Join-Path $embeddingsRoot 'embeddings_text_en_text_fr_audio')
         CcmtCheckpointDir = (Join-Path $checkpointRoot 'ccmt_multimodal_regression_text_en_text_fr_audio')
+        ReuseFrom = @(
+            (Join-Path $embeddingsRoot 'embeddings_text_en_audio'),
+            (Join-Path $embeddingsRoot 'embeddings_text_en_text_es_audio')
+        )
         EmbeddingsCompletionFiles = @(
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_text_fr_audio') 'embeddings_train.pt'),
             (Join-Path (Join-Path $embeddingsRoot 'embeddings_text_en_text_fr_audio') 'embeddings_val.pt'),
@@ -345,7 +363,7 @@ foreach ($combo in $combinations) {
     if (-not $SkipEmbeddings) {
         $skipEmbeddingsStep = Assert-StepCanRunOrResume -TargetDir $combo.EmbeddingsDir -Description "Directorul de embeddings pentru $($combo.Name)" -RequiredPaths $combo.EmbeddingsCompletionFiles -ResumeMode $Resume
         if (-not $skipEmbeddingsStep) {
-            Invoke-Step -Name "Extract regression embeddings: $($combo.Name)" -Arguments @(
+            $embeddingArguments = @(
                 'scripts/extract_and_save_embeddings.py',
                 '--partition', 'train,val',
                 '--modalities', $combo.Modalities,
@@ -356,10 +374,14 @@ foreach ($combo in $combinations) {
                 '--fr-checkpoint', $backboneCheckpointDirs.text_fr,
                 '--audio-checkpoint', $backboneCheckpointDirs.audio
             )
+            if ($combo.ReuseFrom.Count -gt 0) {
+                $embeddingArguments += @('--reuse-from', ($combo.ReuseFrom -join ';'))
+            }
+            Invoke-Step -Name "Extract regression embeddings: $($combo.Name)" -Arguments $embeddingArguments
         }
     }
     elseif (-not $SkipCcmt) {
-        Assert-StepComplete -TargetDir $combo.EmbeddingsDir -Description "Directorul de embeddings necesar pentru $($combo.Name)" -RequiredPaths $combo.EmbeddingsCompletionFiles
+        Assert-StepComplete -TargetDir $combo.EmbeddingsDir -Description "Directorul de embeddings necesar pentru $($combo.Name)" -RequiredPaths $combo.EmbeddingsCompletionFiles -SuggestResumeWithoutSkipEmbeddings
     }
 
     if (-not $SkipCcmt) {

@@ -2,11 +2,15 @@
 Dataset Loader pentru embeddings pre-calculate.
 Permite training rapid folosind embeddings salvate pe disc.
 """
+import csv
 from pathlib import Path
 from typing import Dict, List
 
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PrecomputedEmbeddingsDataset(Dataset):
@@ -77,7 +81,7 @@ class PrecomputedEmbeddingsDataset(Dataset):
 
         if self.regression:
             if self.valence is None or self.arousal is None:
-                raise ValueError("Embeddings file must contain 'valence' and 'arousal' tensors for regression task.")
+                self._recover_regression_targets(embeddings_file)
             self.valence = self.valence.to(torch.float32)
             self.arousal = self.arousal.to(torch.float32)
 
@@ -90,6 +94,41 @@ class PrecomputedEmbeddingsDataset(Dataset):
         print(f"  Modalitati active: {self.modalities}")
         for modality in self.modalities:
             print(f"  {modality} embedding dim: {self.embeddings[modality].shape[-1]}")
+
+    def _recover_regression_targets(self, embeddings_file: Path) -> None:
+        labels_csv = PROJECT_ROOT / "MSP_Podcast" / "Labels" / "labels_consensus.csv"
+        if not labels_csv.exists():
+            raise ValueError(
+                "Embeddings file must contain 'valence' and 'arousal' tensors for regression task, "
+                f"iar fisierul de labels nu exista: {labels_csv}"
+            )
+
+        label_lookup: dict[str, tuple[float, float]] = {}
+        with labels_csv.open("r", encoding="utf-8") as file_handle:
+            reader = csv.DictReader(file_handle)
+            for row in reader:
+                file_name = str(row["FileName"])
+                values = (float(row["EmoVal"]), float(row["EmoAct"]))
+                label_lookup[file_name] = values
+                if file_name.endswith(".wav"):
+                    label_lookup[file_name[:-4]] = values
+
+        valence = []
+        arousal = []
+        for file_id in self.file_ids:
+            key = str(file_id)
+            if key not in label_lookup:
+                raise KeyError(f"Nu am gasit {file_id} in {labels_csv}")
+            emo_val, emo_act = label_lookup[key]
+            valence.append(emo_val)
+            arousal.append(emo_act)
+
+        self.valence = torch.tensor(valence, dtype=torch.float32)
+        self.arousal = torch.tensor(arousal, dtype=torch.float32)
+        self.data["valence"] = self.valence.clone()
+        self.data["arousal"] = self.arousal.clone()
+        torch.save(self.data, embeddings_file)
+        print(f"✓ Added missing valence/arousal targets to {embeddings_file}")
 
     @staticmethod
     def denormalize_val_arousal(val_arousal_norm: torch.Tensor) -> torch.Tensor:
