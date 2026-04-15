@@ -1,4 +1,4 @@
-"""Batch translation entry point (Optimized for GPU Batching, French)."""
+"""Batch translation entry point (French)"""
 from __future__ import annotations
 
 import argparse

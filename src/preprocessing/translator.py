@@ -1,4 +1,4 @@
-"""Translation utilities for the text sentiment channel (Optimized for RTX 4060)."""
+"""Translation utilities for the text sentiment channel."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +11,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 @dataclass
 
 class NLLBTranslatorConfig:
-    # 600M este rapid si bun. Poti incerca si "facebook/nllb-200-distilled-1.3B" daca ai VRAM liber
+   
     model_name: str = "facebook/nllb-200-distilled-600M"
     src_lang: str = "eng_Latn"   # Limba sursa: Engleza
     tgt_lang: str = "spa_Latn"   # Limba tinta: Spaniola

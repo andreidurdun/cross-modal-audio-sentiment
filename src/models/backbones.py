@@ -630,21 +630,3 @@ def load_all_backbones(
     print("="*60 + "\n")
     
     return backbones
-
-"""Utilizare exemplu:
-
-from src.models.backbones import load_all_backbones
-
-# Load toate backbones
-backbones = load_all_backbones(freeze=True, projection_dim=256)
-
-# Text embeddings
-embeddings_en = backbones['text_en'](texts_en)  # (batch, 256)
-embeddings_es = backbones['text_es'](texts_es)  # (batch, 256)
-
-# Audio embeddings (necesita audio raw waveform)
-audio_emb = backbones['audio'](audio_waveforms)  # (batch, 256)
-
-# Concatenare pentru fusion
-combined = torch.cat([embeddings_en, embeddings_es, audio_emb], dim=1)  # (batch, 768)
-"""

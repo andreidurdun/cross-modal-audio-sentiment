@@ -1,4 +1,4 @@
-"""Batch translation entry point (Optimized for GPU Batching)."""
+"""Batch translation entry point."""
 from __future__ import annotations
 
 import argparse
@@ -14,12 +14,11 @@ except ModuleNotFoundError:
 
 PROJECT_ROOT = project_root()
 
-# Am actualizat importul pentru noul translator
+
 from src.preprocessing.translator import NLLBTranslator, NLLBTranslatorConfig
 from src.utils.helpers import set_seed
 
-# Poti adauga asta in functia ta de parse_args, dar o definesc aici ca referinta
-BATCH_SIZE = 32  # 32 sau 64 este ideal pentru RTX 4060 8GB in FP16
+BATCH_SIZE = 32 
 INPUT_PATH = Path("MSP_Podcast/Transcription_en_cache.json")
 OUTPUT_PATH = Path("MSP_Podcast/Transcription_es.json")
 SEED = 42
@@ -31,10 +30,10 @@ def main() -> None:
     with INPUT_PATH.open("r", encoding="utf-8") as f:
         transcripts = json.load(f)
 
-    # Initializam noul translator (foloseste NLLB si FP16 automat)
+
     translator = NLLBTranslator()
     
-    # Separam cheile si textele pentru a putea face batching
+
     keys = list(transcripts.keys())
     texts = list(transcripts.values())
     translated = {}
@@ -44,15 +43,14 @@ def main() -> None:
     
     start_time = time.time()
 
-    # Iteram prin lista din BATCH_SIZE in BATCH_SIZE
+
     for i in range(0, total_items, BATCH_SIZE):
         batch_keys = keys[i : i + BATCH_SIZE]
         batch_texts = texts[i : i + BATCH_SIZE]
         
-        # Apelam NOUA metoda de batching pe care am creat-o
         batch_translated = translator.translate_batch(batch_texts)
         
-        # Reconstruim dictionarul mapand cheile originale cu textele traduse
+        #reconstruim dictionarul mapand cheile originale cu textele traduse
         for key, translated_text in zip(batch_keys, batch_translated):
             translated[key] = translated_text
             

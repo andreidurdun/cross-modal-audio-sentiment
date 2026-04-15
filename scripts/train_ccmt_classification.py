@@ -214,21 +214,17 @@ class CCMTTrainer:
                 amp_dtype=amp_dtype,
             )
             
-            # Etichetele raman intregi (long) pentru CrossEntropyLoss!
+            
             labels = batch['labels'].to(self.device, non_blocking=True)
             
-            # Mixed precision context modern
+            #mixed precision
             with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=self.use_amp):
-                # Forward pass
                 predictions = self.model(**embedding_inputs)
-                
-                # CrossEntropyLoss stie sa gestioneze logits in FP16/BF16, dar e mai sigur cu float32 intern
                 loss = self.criterion(predictions.float(), labels)
-                
-                # Scaleaza loss-ul pentru gradient accumulation
+                #scaleaza loss-ul pentru gradient accumulation
                 loss = loss / self.gradient_accumulation_steps
             
-            # Backward pass (acumuleaza gradienti)
+            #backward pass (acumuleaza gradienti)
             if self.use_amp:
                 self.scaler.scale(loss).backward()  # type: ignore
             else:

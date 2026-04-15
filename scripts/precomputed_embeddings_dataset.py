@@ -7,7 +7,7 @@ except ModuleNotFoundError:
 
 project_root()
 
-from src.data.precomputed_embeddings_dataset import (  # noqa: F401
+from src.data.precomputed_embeddings_dataset import ( 
     PrecomputedEmbeddingsDataset,
     create_dataloaders,
 )

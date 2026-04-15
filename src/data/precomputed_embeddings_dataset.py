@@ -1,5 +1,5 @@
 """
-Dataset Loader pentru embeddings pre-calculate.
+Dataset Loader pentru embeddings precalculate.
 Permite training rapid folosind embeddings salvate pe disc.
 """
 import csv
@@ -14,10 +14,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class PrecomputedEmbeddingsDataset(Dataset):
-    """
-    Dataset pentru embeddings pre-calculate.
-    Incarca embeddings de pe disc pentru training rapid.
-    """
 
     SUPPORTED_MODALITIES = ["text_en", "text_es", "text_de", "text_fr", "audio"]
 

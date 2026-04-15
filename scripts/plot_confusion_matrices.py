@@ -1,12 +1,3 @@
-"""
-Script: plot_confusion_matrices.py
-
-- Incarca modelele individuale LoRA (Text EN, Text ES, Audio) ca si clasificatori
-- Incarca modelul fuzionat (CCMT)
-- Ruleaza predictii pe setul de validare (Development)
-- Ploteaza matricea de confuzie pentru fiecare model in parte
-"""
-
 from pathlib import Path
 import sys
 import torch
@@ -16,7 +7,6 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix
 import os
 
-# Asigura-te ca src/ este in sys.path pentru importuri absolute
 try:
     from scripts._bootstrap import project_root
 except ModuleNotFoundError:
@@ -34,25 +24,21 @@ from transformers import (
 )
 from peft import PeftModel
 
-from src.models.full_model import load_ccmt_only_model  
+from src.models.full_model import load_ccmt_only_model
 from src.models import load_full_multimodal_model
 from src.data.dataset import MSP_Podcast_Dataset
 from src.data.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
 from src.data.text_datasets import TextEncoderDataset
 from src.data.audio_datasets import AudioWaveLMDataset, AudioCollator
 
-# ==========================================
-# CONFIGURARE GENERALA
-# ==========================================
+
 BATCH_SIZE = 64
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 LABELS = [0, 1, 2]
 LABEL_NAMES = ["unsatisfied", "neutral", "satisfied"]
 data_dir = PROJECT_ROOT / 'MSP_Podcast'
 
-# ==========================================
-# Functie Helper: Ploteaza matricea
-# ==========================================
+
 def plot_confmat(y_true, y_pred, title, save_path=None):
     cm = confusion_matrix(y_true, y_pred, labels=LABELS)
     plt.figure(figsize=(6, 5))
@@ -74,7 +60,6 @@ def main():
     parser.add_argument('--model', type=str, default='all', choices=['all', 'text_en', 'text_es', 'audio', 'ccmt'], help='Model de evaluat')
     args = parser.parse_args()
 
-    # Initializare DataLoaders (ca inainte)
     tokenizer_en = AutoTokenizer.from_pretrained("cardiffnlp/twitter-roberta-base-sentiment-latest")
     val_dataset_en = TextEncoderDataset(
         MSP_Podcast_Dataset(
@@ -131,7 +116,7 @@ def main():
     )
     val_loader_emb = DataLoader(val_dataset_emb, batch_size=BATCH_SIZE, shuffle=False)
 
-    print("[OK] All DataLoaders initialized successfully!\n")
+    print("All DataLoaders initialized successfully!\n")
 
 
 
@@ -157,9 +142,9 @@ def main():
                     all_preds.extend(preds)
                     all_labels.extend(batch['labels'].cpu().numpy())
             plot_confmat(all_labels, all_preds, "Text EN Classifier", "results/cf_matrix/confmat_text_en.pdf")
-            print("[OK] Text EN evaluated.")
+            print("Text EN evaluated.")
         except Exception as e:
-            print(f"[!] Eroare la evaluarea Text EN: {e}")
+            print(f"Eroare la evaluarea Text EN: {e}")
 
 
 
@@ -185,9 +170,9 @@ def main():
                     all_preds.extend(preds)
                     all_labels.extend(batch['labels'].cpu().numpy())
             plot_confmat(all_labels, all_preds, "Text ES Classifier", "results/cf_matrix/confmat_text_es.pdf")
-            print("[OK] Text ES evaluated.")
+            print("Text ES evaluated.")
         except Exception as e:
-            print(f"[!] Eroare la evaluarea Text ES: {e}")
+            print(f"Eroare la evaluarea Text ES: {e}")
 
 
 
@@ -213,9 +198,9 @@ def main():
                     all_preds.extend(preds)
                     all_labels.extend(batch['labels'].cpu().numpy())
             plot_confmat(all_labels, all_preds, "Audio Classifier", "results/cf_matrix/confmat_audio.pdf")
-            print("[OK] Audio evaluated.")
+            print("Audio evaluated.")
         except Exception as e:
-            print(f"[!] Eroare la evaluarea Audio: {e}")
+            print(f"Eroare la evaluarea Audio: {e}")
 
 
 
@@ -236,7 +221,7 @@ def main():
                 'ccmt_dropout': 0.1,
             }
             
-            # Cream modelul
+           
             ccmt_model = load_ccmt_only_model(
                 text_en_dim=model_config['text_en_dim'],
                 text_es_dim=model_config['text_es_dim'],
@@ -251,7 +236,7 @@ def main():
                 device=DEVICE,
             )
             
-            # Incarcam checkpoint-ul
+            #incarcam greutatile
             checkpoint_path = PROJECT_ROOT / "checkpoints/ccmt_multimodal/model2_optim/best_model.pt"
             checkpoint = torch.load(str(checkpoint_path), map_location=DEVICE)
             ccmt_model.load_state_dict(checkpoint['model_state_dict'])
@@ -271,12 +256,12 @@ def main():
                         audio_emb=audio_emb
                     )
                     
-                    # Robust extraction of logits tensor
+                    #extraction of logits tensor
                     if isinstance(outputs, dict):
                         if 'logits' in outputs:
                             logits = outputs['logits']
                         else:
-                            # Cauta primul tensor din dict
+                           
                             logits = next((v for v in outputs.values() if hasattr(v, 'argmax')), None)
                             if logits is None:
                                 raise ValueError("Nu s-a gasit tensorul de logits in output-ul modelului CCMT.")
@@ -288,12 +273,12 @@ def main():
                     all_labels.extend(batch_labels.cpu().numpy())
             
             plot_confmat(all_labels, all_preds, "CCMT Multimodal Model", "results/cf_matrix/confmat_ccmt.pdf")
-            print("[OK] CCMT evaluated.")
+            print("CCMT evaluated.")
         except Exception as e:
-            print(f"[!] Eroare la evaluarea CCMT: {e}")
+            print(f"Eroare la evaluarea CCMT: {e}")
 
     print("\n" + "="*50)
-    print("[OK] Toate matricile de confuzie au fost salvate cu succes in 'results/cf_matrix/'!")
+    print("Toate matricile de confuzie au fost salvate cu succes în 'results/cf_matrix/'!")
     print("="*50)
 
 

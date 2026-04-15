@@ -174,7 +174,7 @@ class MultimodalEmotionModel(nn.Module):
         text_fr: Optional[Union[List[str], torch.Tensor]] = None,
         audio: Optional[torch.Tensor] = None,
         
-        # Pre-computed embeddings (optional - mai rapid la inference)
+        #precomputed embeddings
         text_en_emb: Optional[torch.Tensor] = None,
         text_es_emb: Optional[torch.Tensor] = None,
         text_de_emb: Optional[torch.Tensor] = None,
@@ -185,8 +185,8 @@ class MultimodalEmotionModel(nn.Module):
         Forward pass prin intreaga arhitectura.
         
         Poate primi fie:
-        1. Input raw (text, audio) → trece prin backbones
-        2. Embeddings pre-calculate → trece direct la fusion
+        1. Input raw (text, audio) -> trece prin backbones
+        2. Embeddings pre-calculate -> trece direct la fusion
         
         Args:
             text_en: Text in engleza (List[str]) sau tokenized (Tensor)
@@ -479,7 +479,7 @@ def load_ccmt_only_model(
         ccmt_heads=ccmt_heads,
         ccmt_mlp_dim=ccmt_mlp_dim,
         ccmt_dropout=ccmt_dropout,
-        freeze_backbones=False,  # Nu conteaza, nu avem backbones
+        freeze_backbones=False,  
     )
     
     model = model.to(device)

@@ -350,7 +350,7 @@ def main():
         )
     )
 
-    # Ruleaza automat scriptul pentru franceza dupa terminarea celui pentru germana
+    #ruleaza automat scriptul pentru franceza dupa terminarea celui pentru germana
     import subprocess
     import sys
     print("\nRulam automat train_roberta_text_fr.py...")

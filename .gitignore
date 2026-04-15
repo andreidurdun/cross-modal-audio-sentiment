@@ -24,4 +24,6 @@ logs/
 # VS Code
 .vscode/
 
+.github/
+
 

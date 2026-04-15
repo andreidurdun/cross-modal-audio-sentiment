@@ -1,4 +1,4 @@
-"""Batch translation entry point (Optimized for GPU Batching, German)."""
+"""Batch translation entry point"""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,7 @@ PROJECT_ROOT = project_root()
 from src.preprocessing.translator import NLLBTranslatorDE, NLLBTranslatorConfigDE
 from src.utils.helpers import set_seed
 
-BATCH_SIZE = 64  # 32 sau 64 este ideal pentru RTX 4060 8GB in FP16
+BATCH_SIZE = 64  
 INPUT_PATH = Path("MSP_Podcast/Transcription_en.json")
 OUTPUT_PATH = Path("MSP_Podcast/Transcription_de.json")
 SEED = 42
@@ -66,11 +66,3 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-    # Ruleaza traducerea in franceza imediat dupa terminarea celei in germana
-    import subprocess
-    fr_script = Path(__file__).parent / "02_run_translation_fr.py"
-    if fr_script.exists():
-        print("\nPornesc automat traducerea in franceza...")
-        subprocess.run([sys.executable, str(fr_script)], check=True)
-    else:
-        print(f"Scriptul pentru franceza nu a fost gasit la {fr_script}")
