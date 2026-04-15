@@ -642,7 +642,7 @@ backbones = load_all_backbones(freeze=True, projection_dim=256)
 embeddings_en = backbones['text_en'](texts_en)  # (batch, 256)
 embeddings_es = backbones['text_es'](texts_es)  # (batch, 256)
 
-# Audio embeddings (necesită audio raw waveform)
+# Audio embeddings (necesita audio raw waveform)
 audio_emb = backbones['audio'](audio_waveforms)  # (batch, 256)
 
 # Concatenare pentru fusion

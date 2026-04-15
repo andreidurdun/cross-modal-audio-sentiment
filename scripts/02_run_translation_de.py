@@ -17,7 +17,7 @@ PROJECT_ROOT = project_root()
 from src.preprocessing.translator import NLLBTranslatorDE, NLLBTranslatorConfigDE
 from src.utils.helpers import set_seed
 
-BATCH_SIZE = 64  # 32 sau 64 este ideal pentru RTX 4060 8GB în FP16
+BATCH_SIZE = 64  # 32 sau 64 este ideal pentru RTX 4060 8GB in FP16
 INPUT_PATH = Path("MSP_Podcast/Transcription_en.json")
 OUTPUT_PATH = Path("MSP_Podcast/Transcription_de.json")
 SEED = 42
@@ -45,7 +45,7 @@ def main() -> None:
         for key, translated_text in zip(batch_keys, batch_translated):
             translated[key] = translated_text
 
-        # Log: afișează câteva exemple de traduceri la primul batch
+        # Log: afiseaza cateva exemple de traduceri la primul batch
         if i == 0:
             print("\nExemple traduceri ENG -> DEU:")
             for orig, trans in zip(batch_texts[:5], batch_translated[:5]):
@@ -66,11 +66,11 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-    # Rulează traducerea în franceză imediat după terminarea celei în germană
+    # Ruleaza traducerea in franceza imediat dupa terminarea celei in germana
     import subprocess
     fr_script = Path(__file__).parent / "02_run_translation_fr.py"
     if fr_script.exists():
-        print("\nPornesc automat traducerea în franceză...")
+        print("\nPornesc automat traducerea in franceza...")
         subprocess.run([sys.executable, str(fr_script)], check=True)
     else:
-        print(f"Scriptul pentru franceză nu a fost găsit la {fr_script}")
+        print(f"Scriptul pentru franceza nu a fost gasit la {fr_script}")

@@ -1,6 +1,6 @@
 """
-Fusion Network - Adaptoare pentru integrarea features multimodale în CCMT.
-Convertirea embeddings din backbones în token patches pentru CCMT.
+Fusion Network - Adaptoare pentru integrarea features multimodale in CCMT.
+Convertirea embeddings din backbones in token patches pentru CCMT.
 """
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from typing import Dict, List, Optional
 
 class ModalityAdapter(nn.Module):
     """
-    Adaptor pentru transformarea embeddings într-un număr fix de patch-uri (tokens).
-    Folosește proiecție + reshape pentru a genera reprezentări patch-based.
+    Adaptor pentru transformarea embeddings intr-un numar fix de patch-uri (tokens).
+    Foloseste proiectie + reshape pentru a genera reprezentari patch-based.
     """
 
     def __init__(
@@ -25,8 +25,8 @@ class ModalityAdapter(nn.Module):
         """
         Args:
             input_dim: Dimensiunea embedding-ului de intrare (e.g., 768, 256)
-            output_dim: Dimensiunea de ieșire pe token/patch (trebuie să coincidă cu CCMT dim)
-            num_patches: Număr de patch-uri/tokens generate pentru modalitate
+            output_dim: Dimensiunea de iesire pe token/patch (trebuie sa coincida cu CCMT dim)
+            num_patches: Numar de patch-uri/tokens generate pentru modalitate
             dropout: Dropout rate pentru training
         """
         super().__init__()
@@ -34,7 +34,7 @@ class ModalityAdapter(nn.Module):
         self.output_dim = output_dim
         self.num_patches = num_patches
 
-        # Proiectăm embedding-ul la numărul necesar de patch-uri × dimensiunea dorită
+        # Proiectam embedding-ul la numarul necesar de patch-uri × dimensiunea dorita
         intermediate_dim = num_patches * output_dim
 
         self.projection = nn.Sequential(
@@ -54,7 +54,7 @@ class ModalityAdapter(nn.Module):
         """
         batch_size = x.size(0)
         
-        # Proiectăm la spațiul multipatches
+        # Proiectam la spatiul multipatches
         x = self.projection(x)  # (B, num_patches * output_dim)
         
         # Reshape pentru patch structure
@@ -65,8 +65,8 @@ class ModalityAdapter(nn.Module):
 
 class AudioAdapter(nn.Module):
     """
-    Adaptor specializat pentru audio - poate prelucra embeddings secvențiale sau pooled.
-    Suportă reducerea temporală pentru WavLM features.
+    Adaptor specializat pentru audio - poate prelucra embeddings secventiale sau pooled.
+    Suporta reducerea temporala pentru WavLM features.
     """
 
     def __init__(
@@ -80,10 +80,10 @@ class AudioAdapter(nn.Module):
         """
         Args:
             input_dim: Dimensiunea features audio (e.g., 768 pentru WavLM)
-            output_dim: Dimensiunea de ieșire per patch
-            num_patches: Număr patch-uri generate
+            output_dim: Dimensiunea de iesire per patch
+            num_patches: Numar patch-uri generate
             dropout: Dropout rate
-            use_temporal_pooling: Dacă True, aplică pooling temporal pe secvențe lungi
+            use_temporal_pooling: Daca True, aplica pooling temporal pe secvente lungi
         """
         super().__init__()
         self.use_temporal_pooling = use_temporal_pooling
@@ -91,7 +91,7 @@ class AudioAdapter(nn.Module):
         self.output_dim = output_dim
         
         if use_temporal_pooling:
-            # Pentru features secvențiale, aggregăm temporal apoi generăm patches
+            # Pentru features secventiale, aggregam temporal apoi generam patches
             self.temporal_pool = nn.AdaptiveAvgPool1d(1)
             
         # Proiect audio la patch space
@@ -108,12 +108,12 @@ class AudioAdapter(nn.Module):
         Args:
             x: Audio features - poate fi:
                - (batch_size, hidden_dim) - pooled
-               - (batch_size, seq_len, hidden_dim) - secvențial
+               - (batch_size, seq_len, hidden_dim) - secvential
         
         Returns:
             Audio patch tokens (batch_size, num_patches, output_dim)
         """
-        # Dacă primim features secvențiale și avem pooling activat
+        # Daca primim features secventiale si avem pooling activat
         if x.dim() == 3 and self.use_temporal_pooling:
             # (B, seq, dim) → (B, dim, seq)
             x = x.transpose(1, 2)
@@ -122,12 +122,12 @@ class AudioAdapter(nn.Module):
             # Flatten → (B, dim)
             x = x.squeeze(-1)
         elif x.dim() == 3:
-            # Dacă nu vrem pooling, facem mean pooling simplu
+            # Daca nu vrem pooling, facem mean pooling simplu
             x = x.mean(dim=1)  # (B, dim)
         
         batch_size = x.size(0)
         
-        # Proiectăm la patch space
+        # Proiectam la patch space
         x = self.projection(x)  # (B, num_patches * output_dim)
         
         # Reshape la patch structure
@@ -138,12 +138,12 @@ class AudioAdapter(nn.Module):
 
 class MultimodalFusionAdapter(nn.Module):
     """
-    Adaptor complet pentru fuziunea multimodală - 3 modalități:
+    Adaptor complet pentru fuziunea multimodala - 3 modalitati:
     - Text EN (RoBERTa-en)
     - Text ES (RoBERTa-es)  
     - Audio (WavLM)
     
-    Convertește toate embeddings la un număr fix de patches pentru CCMT.
+    Converteste toate embeddings la un numar fix de patches pentru CCMT.
     """
 
     def __init__(
@@ -159,7 +159,7 @@ class MultimodalFusionAdapter(nn.Module):
         Args:
             modality_dims: Dimensiuni embeddings pentru fiecare modalitate activa
             modalities: Ordinea modalitatilor folosita la concatenarea tokenilor
-            ccmt_dim: Dimensiune token CCMT (trebuie consistentă)
+            ccmt_dim: Dimensiune token CCMT (trebuie consistenta)
             num_patches_per_modality: Patch-uri per modalitate
             dropout: Dropout rate
             use_audio_temporal_pooling: Pooling temporal pentru audio
@@ -225,7 +225,7 @@ class MultimodalFusionAdapter(nn.Module):
         return torch.cat(modality_patches, dim=1)
 
     def get_total_patches(self) -> int:
-        """Returnează numărul total de patch-uri/tokens generate."""
+        """Returneaza numarul total de patch-uri/tokens generate."""
         return self.total_patches
 
 
@@ -250,7 +250,7 @@ if __name__ == '__main__':
         num_patches_per_modality=num_patches,
     )
     
-    # Simulăm embeddings
+    # Simulam embeddings
     text_en_emb = torch.randn(batch_size, modality_dims["text_en"])
     text_es_emb = torch.randn(batch_size, modality_dims["text_es"])
     audio_emb = torch.randn(batch_size, modality_dims["audio"])
@@ -262,12 +262,12 @@ if __name__ == '__main__':
         audio_emb=audio_emb,
     )
     
-    print(f"✓ Input shapes:")
+    print(f"[OK] Input shapes:")
     print(f"  text_en: {text_en_emb.shape}")
     print(f"  text_es: {text_es_emb.shape}")
     print(f"  audio: {audio_emb.shape}")
-    print(f"✓ Output shape: {multimodal_tokens.shape}")
-    print(f"✓ Expected: (batch={batch_size}, patches={num_patches * len(modalities)}, dim={ccmt_dim})")
+    print(f"[OK] Output shape: {multimodal_tokens.shape}")
+    print(f"[OK] Expected: (batch={batch_size}, patches={num_patches * len(modalities)}, dim={ccmt_dim})")
     
     assert multimodal_tokens.shape == (batch_size, num_patches * len(modalities), ccmt_dim)
-    print("\n✅ All tests passed!")
+    print("\n[OK] All tests passed!")

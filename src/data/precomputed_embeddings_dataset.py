@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 class PrecomputedEmbeddingsDataset(Dataset):
     """
     Dataset pentru embeddings pre-calculate.
-    Încarcă embeddings de pe disc pentru training rapid.
+    Incarca embeddings de pe disc pentru training rapid.
     """
 
     SUPPORTED_MODALITIES = ["text_en", "text_es", "text_de", "text_fr", "audio"]
@@ -128,7 +128,7 @@ class PrecomputedEmbeddingsDataset(Dataset):
         self.data["valence"] = self.valence.clone()
         self.data["arousal"] = self.arousal.clone()
         torch.save(self.data, embeddings_file)
-        print(f"✓ Added missing valence/arousal targets to {embeddings_file}")
+        print(f"[OK] Added missing valence/arousal targets to {embeddings_file}")
 
     @staticmethod
     def denormalize_val_arousal(val_arousal_norm: torch.Tensor) -> torch.Tensor:

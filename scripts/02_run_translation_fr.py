@@ -17,7 +17,7 @@ PROJECT_ROOT = project_root()
 from src.preprocessing.translator import NLLBTranslatorFR, NLLBTranslatorConfigFR
 from src.utils.helpers import set_seed
 
-BATCH_SIZE = 64  # 32 sau 64 este ideal pentru RTX 4060 8GB în FP16
+BATCH_SIZE = 64  # 32 sau 64 este ideal pentru RTX 4060 8GB in FP16
 INPUT_PATH = Path("MSP_Podcast/Transcription_en.json")
 OUTPUT_PATH = Path("MSP_Podcast/Transcription_fr.json")
 SEED = 42

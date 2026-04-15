@@ -317,7 +317,7 @@ def main():
         labels_csv=str(labels_csv),
         transcripts_en_json=str(transcripts_fr_json),
         partition="Train",
-        modalities=['text_en'],  # folosim text_en ca workaround pentru franceză
+        modalities=['text_en'],  # folosim text_en ca workaround pentru franceza
     )
     print("\n2. Loading Validation dataset...")
     val_dataset_msp = MSP_Podcast_Dataset(
@@ -325,7 +325,7 @@ def main():
         labels_csv=str(labels_csv),
         transcripts_en_json=str(transcripts_fr_json),
         partition="Development",
-        modalities=['text_en'],  # folosim text_en ca workaround pentru franceză
+        modalities=['text_en'],  # folosim text_en ca workaround pentru franceza
     )
     print(f"\nData loaded successfully!")
     print(train_dataset_msp[0])

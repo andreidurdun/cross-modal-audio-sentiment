@@ -1,6 +1,6 @@
 """
 Script de testare pentru modelul RoBERTa Text EN.
-Evaluează pe datele de validare și salvează scorurile și graficele.
+Evalueaza pe datele de validare si salveaza scorurile si graficele.
 """
 from pathlib import Path
 from typing import Optional
@@ -47,7 +47,7 @@ class TextEnTester:
 
     @torch.no_grad()
     def evaluate(self, model, val_loader: DataLoader) -> dict:
-        """Evaluează modelul și calculează metrici."""
+        """Evalueaza modelul si calculeaza metrici."""
         model.eval()
         all_predictions = []
         all_labels = []
@@ -82,7 +82,7 @@ class TextEnTester:
         )
 
     def plot_confusion_matrix(self, cm, output_path):
-        """Plotează confusion matrix."""
+        """Ploteaza confusion matrix."""
         plt.figure(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                    xticklabels=list(self.id2label.values()),
@@ -93,10 +93,10 @@ class TextEnTester:
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"✅ Confusion matrix saved: {output_path}")
+        print(f"[OK] Confusion matrix saved: {output_path}")
 
     def plot_metrics(self, results, output_path):
-        """Plotează metricile principale."""
+        """Ploteaza metricile principale."""
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         
         # F1 per clase
@@ -125,7 +125,7 @@ class TextEnTester:
         for i, v in enumerate(metrics_values):
             axes[0, 1].text(i, v + 0.02, f'{v:.3f}', ha='center', fontsize=9)
         
-        # Normalizată confusion matrix
+        # Normalizata confusion matrix
         cm_normalized = results['confusion_matrix'] / np.array(results['confusion_matrix']).sum(axis=1, keepdims=True)
         sns.heatmap(cm_normalized, annot=True, fmt='.2%', cmap='RdYlGn',
                    ax=axes[1, 0],
@@ -135,7 +135,7 @@ class TextEnTester:
         axes[1, 0].set_ylabel('True Label')
         axes[1, 0].set_xlabel('Predicted Label')
         
-        # Loss și sample count
+        # Loss si sample count
         info_text = f"Validation Loss: {results['avg_loss']:.4f}\n"
         info_text += f"Number of Samples: {results['num_samples']}\n"
         info_text += f"Accuracy: {results['accuracy']:.4f}\n"
@@ -147,7 +147,7 @@ class TextEnTester:
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"✅ Metrics plot saved: {output_path}")
+        print(f"[OK] Metrics plot saved: {output_path}")
 
     def test(
         self,
@@ -156,15 +156,15 @@ class TextEnTester:
         batch_size: int = 32,
         output_dir: Path = Path("results/roberta_text_en"),
     ):
-        """Testează modelul și salvează rezultatele."""
+        """Testeaza modelul si salveaza rezultatele."""
         print("="*80)
         print("Testing RoBERTa Text EN Model")
         print("="*80)
 
-        # Creează directoare output
+        # Creeaza directoare output
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Încarc modelul
+        # Incarc modelul
         checkpoint_dir = Path(checkpoint_dir)
         best_model_path = checkpoint_dir / "best_model"
         if not best_model_path.exists():
@@ -187,20 +187,20 @@ class TextEnTester:
         print(f"\nEvaluating on {len(val_dataset)} validation samples...")
         results = self.evaluate(model, val_loader)
         
-        # Salvează rezultatele
+        # Salveaza rezultatele
         results_json_path = output_dir / "test_results.json"
         with open(results_json_path, 'w') as f:
-            # Salvează doar rezultatele fără predictions pentru a economisi spațiu
+            # Salveaza doar rezultatele fara predictions pentru a economisi spatiu
             results_to_save = {k: v for k, v in results.items() if k not in ['predictions', 'labels']}
             json.dump(results_to_save, f, indent=2)
-        print(f"✅ Results saved: {results_json_path}")
+        print(f"[OK] Results saved: {results_json_path}")
         
-        # Crează grafice
+        # Creaza grafice
         cm = np.array(results['confusion_matrix'])
         self.plot_confusion_matrix(cm, output_dir / "confusion_matrix.png")
         self.plot_metrics(results, output_dir / "metrics.png")
         
-        # Afișează rezultatele
+        # Afiseaza rezultatele
         print("\n" + "="*80)
         print("VALIDATION RESULTS")
         print("="*80)
@@ -226,7 +226,7 @@ def main():
     checkpoint_dir = Path("checkpoints/roberta_text_en")
     output_dir = Path("results/roberta_text_en")
     
-    # Verificare fișiere
+    # Verificare fisiere
     if not labels_csv.exists():
         raise FileNotFoundError(f"Labels file not found: {labels_csv}")
     if not transcripts_en_json.exists():
@@ -248,7 +248,7 @@ def main():
         max_workers=8
     )
     
-    print(f"✅ Data loaded successfully!")
+    print(f"[OK] Data loaded successfully!")
     print(f"   Val: {len(val_dataset_msp)} samples\n")
     
     # Create tester and wrap dataset

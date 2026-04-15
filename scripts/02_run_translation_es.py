@@ -18,8 +18,8 @@ PROJECT_ROOT = project_root()
 from src.preprocessing.translator import NLLBTranslator, NLLBTranslatorConfig
 from src.utils.helpers import set_seed
 
-# Poți adăuga asta în funcția ta de parse_args, dar o definesc aici ca referință
-BATCH_SIZE = 32  # 32 sau 64 este ideal pentru RTX 4060 8GB în FP16
+# Poti adauga asta in functia ta de parse_args, dar o definesc aici ca referinta
+BATCH_SIZE = 32  # 32 sau 64 este ideal pentru RTX 4060 8GB in FP16
 INPUT_PATH = Path("MSP_Podcast/Transcription_en_cache.json")
 OUTPUT_PATH = Path("MSP_Podcast/Transcription_es.json")
 SEED = 42
@@ -31,10 +31,10 @@ def main() -> None:
     with INPUT_PATH.open("r", encoding="utf-8") as f:
         transcripts = json.load(f)
 
-    # Inițializăm noul translator (folosește NLLB și FP16 automat)
+    # Initializam noul translator (foloseste NLLB si FP16 automat)
     translator = NLLBTranslator()
     
-    # Separam cheile și textele pentru a putea face batching
+    # Separam cheile si textele pentru a putea face batching
     keys = list(transcripts.keys())
     texts = list(transcripts.values())
     translated = {}
@@ -44,19 +44,19 @@ def main() -> None:
     
     start_time = time.time()
 
-    # Iterăm prin listă din BATCH_SIZE în BATCH_SIZE
+    # Iteram prin lista din BATCH_SIZE in BATCH_SIZE
     for i in range(0, total_items, BATCH_SIZE):
         batch_keys = keys[i : i + BATCH_SIZE]
         batch_texts = texts[i : i + BATCH_SIZE]
         
-        # Apelăm NOUA metodă de batching pe care am creat-o
+        # Apelam NOUA metoda de batching pe care am creat-o
         batch_translated = translator.translate_batch(batch_texts)
         
-        # Reconstruim dicționarul mapând cheile originale cu textele traduse
+        # Reconstruim dictionarul mapand cheile originale cu textele traduse
         for key, translated_text in zip(batch_keys, batch_translated):
             translated[key] = translated_text
             
-        # Un mic log pentru a vedea progresul (opțional, dar foarte util)
+        # Un mic log pentru a vedea progresul (optional, dar foarte util)
         if (i + BATCH_SIZE) % (BATCH_SIZE * 10) == 0 or i + BATCH_SIZE >= total_items:
             current_count = min(i + BATCH_SIZE, total_items)
             print(f"Progress: {current_count}/{total_items} ({(current_count/total_items)*100:.1f}%)")

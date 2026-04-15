@@ -1,6 +1,6 @@
 """
 Full Multimodal Emotion Recognition Model
-Integrează backbones pretrenate + fusion adapters + CCMT pentru predicție end-to-end.
+Integreaza backbones pretrenate + fusion adapters + CCMT pentru predictie end-to-end.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from src.models.ccmt_layer import CascadedCrossModalTransformer
 
 class MultimodalEmotionModel(nn.Module):
     """
-    Arhitectură completă multimodală pentru recunoașterea emoțiilor.
+    Arhitectura completa multimodala pentru recunoasterea emotiilor.
     
     Pipeline:
     1. Backbones pretrenate (frozen):
@@ -29,13 +29,13 @@ class MultimodalEmotionModel(nn.Module):
        - Convertesc embeddings la patch tokens
     
     3. CCMT (Cascaded Cross-Modal Transformer):
-       - Cross-attention între modalități
-       - Predicție finală
+       - Cross-attention intre modalitati
+       - Predictie finala
     
-    Arhitectura suportă:
+    Arhitectura suporta:
     - Training end-to-end (cu backbones frozen sau trainable)
-    - Inference eficientă
-    - Flexibilitate în configurare
+    - Inference eficienta
+    - Flexibilitate in configurare
     """
 
     def __init__(
@@ -76,26 +76,26 @@ class MultimodalEmotionModel(nn.Module):
         """
         Args:
             text_en_backbone: Backbone preantrenat pentru text engleza
-            text_es_backbone: Backbone preantrenat pentru text spaniolă
+            text_es_backbone: Backbone preantrenat pentru text spaniola
             audio_backbone: Backbone preantrenat pentru audio (WavLM)
             text_en_dim: Dimensiune output text_en
             text_es_dim: Dimensiune output text_es
             audio_dim: Dimensiune output audio
-            num_classes: Număr clase pentru clasificare (default: 3 pentru valence)
+            num_classes: Numar clase pentru clasificare (default: 3 pentru valence)
             ccmt_dim: Dimensiune hidden CCMT
             num_patches_per_modality: Patch-uri per modalitate
-            ccmt_depth: Număr layere CCMT
-            ccmt_heads: Număr attention heads
-            ccmt_mlp_dim: Dimensiune MLP în CCMT
+            ccmt_depth: Numar layere CCMT
+            ccmt_heads: Numar attention heads
+            ccmt_mlp_dim: Dimensiune MLP in CCMT
             ccmt_dim_head: Dimensiune per attention head
             ccmt_dropout: Dropout CCMT
-            fusion_dropout: Dropout în fusion adapters
+            fusion_dropout: Dropout in fusion adapters
             use_audio_temporal_pooling: Pooling temporal pentru audio
-            freeze_backbones: Dacă True, înghețăm backbones
+            freeze_backbones: Daca True, inghetam backbones
         """
         super().__init__()
         
-        # Salvăm backbones (pot fi None dacă vrem să le adăugăm mai târziu)
+        # Salvam backbones (pot fi None daca vrem sa le adaugam mai tarziu)
         self.text_en_backbone = text_en_backbone
         self.text_es_backbone = text_es_backbone
         self.text_de_backbone = text_de_backbone
@@ -127,7 +127,7 @@ class MultimodalEmotionModel(nn.Module):
             use_audio_temporal_pooling=use_audio_temporal_pooling,
         )
         
-        # CCMT - cross-modal transformer pentru fusion și predicție
+        # CCMT - cross-modal transformer pentru fusion si predictie
         total_patches = num_patches_per_modality * len(self.modalities)
         self.ccmt = CascadedCrossModalTransformer(
             num_outputs=num_classes,
@@ -145,7 +145,7 @@ class MultimodalEmotionModel(nn.Module):
         self.num_patches_per_modality = num_patches_per_modality
 
     def _freeze_backbones(self):
-        """Înghețăm parametrii backbones dacă sunt setați."""
+        """Inghetam parametrii backbones daca sunt setati."""
         if self.text_en_backbone is not None:
             for param in self.text_en_backbone.parameters():
                 param.requires_grad = False
@@ -174,7 +174,7 @@ class MultimodalEmotionModel(nn.Module):
         text_fr: Optional[Union[List[str], torch.Tensor]] = None,
         audio: Optional[torch.Tensor] = None,
         
-        # Pre-computed embeddings (opțional - mai rapid la inference)
+        # Pre-computed embeddings (optional - mai rapid la inference)
         text_en_emb: Optional[torch.Tensor] = None,
         text_es_emb: Optional[torch.Tensor] = None,
         text_de_emb: Optional[torch.Tensor] = None,
@@ -182,22 +182,22 @@ class MultimodalEmotionModel(nn.Module):
         audio_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Forward pass prin întreaga arhitectură.
+        Forward pass prin intreaga arhitectura.
         
         Poate primi fie:
         1. Input raw (text, audio) → trece prin backbones
         2. Embeddings pre-calculate → trece direct la fusion
         
         Args:
-            text_en: Text în engleză (List[str]) sau tokenized (Tensor)
-            text_es: Text în spaniolă (List[str]) sau tokenized (Tensor)
+            text_en: Text in engleza (List[str]) sau tokenized (Tensor)
+            text_es: Text in spaniola (List[str]) sau tokenized (Tensor)
             audio: Audio waveform sau features (Tensor)
             text_en_emb: Pre-computed text EN embeddings (B, text_en_dim)
             text_es_emb: Pre-computed text ES embeddings (B, text_es_dim)
             audio_emb: Pre-computed audio embeddings (B, audio_dim) sau (B, seq, audio_dim)
         
         Returns:
-            Predicții clase: (batch_size, num_classes) cu Sigmoid aplicat
+            Predictii clase: (batch_size, num_classes) cu Sigmoid aplicat
         """
         raw_inputs = {
             "text_en": text_en,
@@ -238,7 +238,7 @@ class MultimodalEmotionModel(nn.Module):
             }
         )
         
-        # CCMT - cross-modal attention și predicție
+        # CCMT - cross-modal attention si predictie
         predictions = self.ccmt(multimodal_tokens)  # (batch, num_classes)
         
         return predictions
@@ -257,10 +257,10 @@ class MultimodalEmotionModel(nn.Module):
         audio_emb: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Predicție cu interpretare rezultate.
+        Predictie cu interpretare rezultate.
         
         Returns:
-            predictions: (batch_size, num_classes) - probabilități sigmoid
+            predictions: (batch_size, num_classes) - probabilitati sigmoid
             predicted_classes: (batch_size,) - clasa cu scorul maxim
         """
         self.eval()
@@ -282,15 +282,15 @@ class MultimodalEmotionModel(nn.Module):
         return predictions, predicted_classes
 
     def get_trainable_parameters(self) -> int:
-        """Returnează numărul de parametri trainable."""
+        """Returneaza numarul de parametri trainable."""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def get_total_parameters(self) -> int:
-        """Returnează numărul total de parametri."""
+        """Returneaza numarul total de parametri."""
         return sum(p.numel() for p in self.parameters())
 
     def print_parameter_summary(self):
-        """Afișează rezumat parametri."""
+        """Afiseaza rezumat parametri."""
         trainable = self.get_trainable_parameters()
         total = self.get_total_parameters()
         frozen = total - trainable
@@ -325,24 +325,24 @@ def load_full_multimodal_model(
     modalities: Optional[List[str]] = None,
 ) -> MultimodalEmotionModel:
     """
-    Încarcă modelul complet cu backbones pretrenate.
+    Incarca modelul complet cu backbones pretrenate.
     
     Args:
         text_en_checkpoint: Path la checkpoint text EN
         text_es_checkpoint: Path la checkpoint text ES
         audio_checkpoint: Path la checkpoint audio
-        num_classes: Număr clase
+        num_classes: Numar clase
         ccmt_dim: Dimensiune CCMT
         num_patches_per_modality: Patch-uri per modalitate
         ccmt_depth: Depth CCMT
         ccmt_heads: Attention heads
         ccmt_mlp_dim: MLP dimension
         freeze_backbones: Freeze backbones
-        projection_dim: Dimensiune proiecție uniformă (None = native dims)
+        projection_dim: Dimensiune proiectie uniforma (None = native dims)
         device: Device pentru model
     
     Returns:
-        Model complet inițializat
+        Model complet initializat
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -352,7 +352,7 @@ def load_full_multimodal_model(
     
     modalities = list(modalities or ["text_es", "text_en", "audio"])
 
-    # Încarcă toate backbones
+    # Incarca toate backbones
     print(f"\n1. Loading all backbones {modalities}...")
     backbones = load_all_backbones(
         text_en_checkpoint=text_en_checkpoint,
@@ -378,7 +378,7 @@ def load_full_multimodal_model(
     for modality, dim_value in modality_dims.items():
         print(f"   - {modality}: {dim_value}")
     
-    # Construiește modelul
+    # Construieste modelul
     print("\n3. Building full model architecture...")
     model = MultimodalEmotionModel(
         text_en_backbone=text_en_backbone,
@@ -427,26 +427,26 @@ def load_ccmt_only_model(
     modalities: Optional[List[str]] = None,
 ) -> MultimodalEmotionModel:
     """
-    Încarcă modelul DOAR cu fusion + CCMT (fără backbones).
+    Incarca modelul DOAR cu fusion + CCMT (fara backbones).
     
     Util pentru antrenarea cu embeddings precalculate, economisind
-    memorie și timp de încărcare.
+    memorie si timp de incarcare.
     
     Args:
         text_en_dim: Dimensiune embeddings text EN
         text_es_dim: Dimensiune embeddings text ES
         audio_dim: Dimensiune embeddings audio
-        num_classes: Număr clase
+        num_classes: Numar clase
         ccmt_dim: Dimensiune CCMT
         num_patches_per_modality: Patch-uri per modalitate
         ccmt_depth: Depth CCMT
         ccmt_heads: Attention heads
         ccmt_mlp_dim: MLP dimension
-        ccmt_dropout: Dropout în layerele CCMT
+        ccmt_dropout: Dropout in layerele CCMT
         device: Device pentru model
     
     Returns:
-        Model CCMT (fără backbones)
+        Model CCMT (fara backbones)
     """
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -459,9 +459,9 @@ def load_ccmt_only_model(
     print(f"Modalities: {modalities}")
     print(f"CCMT config: dim={ccmt_dim}, depth={ccmt_depth}, heads={ccmt_heads}, dropout={ccmt_dropout}")
     
-    # Construiește modelul FĂRĂ backbones
+    # Construieste modelul FARA backbones
     model = MultimodalEmotionModel(
-        text_en_backbone=None,  # Nu încărcăm backbones
+        text_en_backbone=None,  # Nu incarcam backbones
         text_es_backbone=None,
         text_de_backbone=None,
         text_fr_backbone=None,
@@ -479,7 +479,7 @@ def load_ccmt_only_model(
         ccmt_heads=ccmt_heads,
         ccmt_mlp_dim=ccmt_mlp_dim,
         ccmt_dropout=ccmt_dropout,
-        freeze_backbones=False,  # Nu contează, nu avem backbones
+        freeze_backbones=False,  # Nu conteaza, nu avem backbones
     )
     
     model = model.to(device)
@@ -495,7 +495,7 @@ if __name__ == '__main__':
     # Test full model
     print("Testing MultimodalEmotionModel...")
     
-    # Simulăm backbones simple
+    # Simulam backbones simple
     class DummyBackbone(nn.Module):
         def __init__(self, output_dim):
             super().__init__()
@@ -540,9 +540,9 @@ if __name__ == '__main__':
         audio_emb=audio_emb,
     )
     
-    print(f"\n✓ Predictions shape: {predictions.shape}")
-    print(f"✓ Expected: ({batch_size}, 3)")
-    print(f"✓ Predictions sum per sample: {predictions.sum(dim=1)}")
+    print(f"\n[OK] Predictions shape: {predictions.shape}")
+    print(f"[OK] Expected: ({batch_size}, 3)")
+    print(f"[OK] Predictions sum per sample: {predictions.sum(dim=1)}")
     
     # Test predict
     preds, classes = model.predict(
@@ -550,6 +550,6 @@ if __name__ == '__main__':
         text_es_emb=text_es_emb,
         audio_emb=audio_emb,
     )
-    print(f"\n✓ Predicted classes: {classes}")
+    print(f"\n[OK] Predicted classes: {classes}")
     
-    print("\n✅ All tests passed!")
+    print("\n[OK] All tests passed!")

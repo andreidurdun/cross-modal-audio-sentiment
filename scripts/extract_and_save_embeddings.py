@@ -101,11 +101,11 @@ class EmbeddingExtractor:
     ):
         """
         Args:
-            output_dir: Director unde se salvează embeddings
+            output_dir: Director unde se salveaza embeddings
             text_en_checkpoint: Path la checkpoint RoBERTa EN
             text_es_checkpoint: Path la checkpoint RoBERTa ES
             audio_checkpoint: Path la checkpoint WavLM
-            projection_dim: Dimensiune proiecție (None = dimensiune nativă)
+            projection_dim: Dimensiune proiectie (None = dimensiune nativa)
             device: Device pentru procesare
             batch_size: Batch size pentru procesare
         """
@@ -122,7 +122,7 @@ class EmbeddingExtractor:
         print("EMBEDDING EXTRACTOR INITIALIZATION")
         print("="*80)
         
-        # Încarcă backbones
+        # Incarca backbones
         print("\nLoading backbones...")
         self.backbones = load_all_backbones(
             text_en_checkpoint=text_en_checkpoint,
@@ -204,20 +204,20 @@ class EmbeddingExtractor:
         save_individually: bool = False,
     ) -> Dict:
         """
-        Extrage embeddings pentru o partiție specifică.
+        Extrage embeddings pentru o partitie specifica.
         
         Args:
             partition: 'train', 'val', 'test1', 'test2', sau 'dev'
-            save_individually: Dacă True, salvează fiecare sample individual
+            save_individually: Daca True, salveaza fiecare sample individual
         
         Returns:
-            Dict cu embeddings și metadata
+            Dict cu embeddings si metadata
         """
         print(f"\n{'='*80}")
         print(f"EXTRACTING EMBEDDINGS FOR PARTITION: {partition.upper()}")
         print(f"{'='*80}\n")
         
-        # Încarcă dataset
+        # Incarca dataset
         print(f"Loading MSP-Podcast {partition} dataset...")
         data_dir = self.dataset_root
         labels_csv = data_dir / "Labels" / "labels_consensus.csv"
@@ -274,7 +274,7 @@ class EmbeddingExtractor:
             'arousal': [],
         }
         
-        # Process în batches
+        # Process in batches
         num_batches = (len(dataset) + self.batch_size - 1) // self.batch_size
         text_modalities_to_compute = [
             modality for modality in self.modalities
@@ -405,8 +405,8 @@ class EmbeddingExtractor:
     
     def _pad_or_truncate(self, tensor: torch.Tensor, target_len: int = 100) -> torch.Tensor:
         """
-        Asigură că tensorul are dimensiunea [batch_size, target_len, embed_dim].
-        Păstrează mereu tokenul de la indexul 0 (ex: [CLS] pentru text).
+        Asigura ca tensorul are dimensiunea [batch_size, target_len, embed_dim].
+        Pastreaza mereu tokenul de la indexul 0 (ex: [CLS] pentru text).
         """
         if tensor.ndim == 2:
             return tensor
@@ -417,7 +417,7 @@ class EmbeddingExtractor:
             return tensor
             
         elif seq_len > target_len:
-            # Tăiem, dar păstrăm ordinea de la început (inclusiv indexul 0)
+            # Taiem, dar pastram ordinea de la inceput (inclusiv indexul 0)
             return tensor[:, :target_len, :]
             
         else:
@@ -426,7 +426,7 @@ class EmbeddingExtractor:
             return torch.cat([tensor, padding], dim=1)
     
     def _save_embeddings(self, embeddings_dict: Dict, partition: str):
-        """Salvează embeddings consolidate."""
+        """Salveaza embeddings consolidate."""
         output_file = self.output_dir / f"embeddings_{partition}.pt"
         
         print(f"\n{'='*80}")
@@ -436,7 +436,7 @@ class EmbeddingExtractor:
         # Save as PyTorch tensors
         torch.save(embeddings_dict, output_file)
         
-        print(f"\n✓ Saved to: {output_file}")
+        print(f"\n[OK] Saved to: {output_file}")
         for modality in self.modalities:
             print(f"  {modality} shape: {embeddings_dict[modality].shape}")
         print(f"  Labels shape: {embeddings_dict['labels'].shape}")
@@ -458,7 +458,7 @@ class EmbeddingExtractor:
         labels: List[int],
         file_ids: List[str],
     ):
-        """Salvează fiecare sample din batch individual (opțional)."""
+        """Salveaza fiecare sample din batch individual (optional)."""
         individual_dir = self.output_dir / "individual" / partition
         individual_dir.mkdir(parents=True, exist_ok=True)
         
@@ -474,7 +474,7 @@ class EmbeddingExtractor:
             torch.save(sample_data, sample_file)
     
     def extract_all_partitions(self, save_individually: bool = False):
-        """Extrage embeddings pentru toate partițiile."""
+        """Extrage embeddings pentru toate partitiile."""
         partitions = ['train', 'val', 'test1']
         
         print("\n" + "="*80)
@@ -494,7 +494,7 @@ class EmbeddingExtractor:
                 )
                 results[partition] = embeddings_dict['metadata']
             except Exception as e:
-                print(f"\n⚠ Error processing {partition}: {e}")
+                print(f"\n[!] Error processing {partition}: {e}")
                 import traceback
                 traceback.print_exc()
         
@@ -517,45 +517,41 @@ class EmbeddingExtractor:
         lang_key: str = "text_de"
     ):
         """
-        Adaugă embeddings pentru limba germană într-un fișier .pt deja existent,
-        fără a recalcula audio sau engleză.
+        Adauga embeddings pentru limba germana intr-un fisier .pt deja existent,
+        fara a recalcula audio sau engleza.
         """
         existing_file = self.output_dir / f"embeddings_{partition}.pt"
         if not existing_file.exists():
-            raise FileNotFoundError(f"Nu există fișierul de bază: {existing_file}. Rulează extragerea inițială mai întâi.")
+            raise FileNotFoundError(f"Nu exista fisierul de baza: {existing_file}. Ruleaza extragerea initiala mai intai.")
             
         print(f"\n{'='*80}")
         print(f"ADDING {lang_key.upper()} EMBEDDINGS TO: {partition.upper()}")
         print(f"{'='*80}")
         
-        # 1. Încărcăm fișierul existent
-        print("Încărcăm embedding-urile existente...")
+        print("Incarcam embedding-urile existente...")
         embeddings_dict = torch.load(existing_file)
         
         if lang_key in embeddings_dict:
-            print(f"Atenție: Cheia '{lang_key}' există deja în fișier. Va fi suprascrisă.")
+            print(f"Atentie: Cheia '{lang_key}' exista deja in fisier. Va fi suprascrisa.")
             
-        # 2. Încărcăm DOAR backbone-ul de germană
-        print(f"Încărcăm modelul pentru {lang_key} din {checkpoint_path}...")
-        # Aici presupun că folosești funcția ta load_all_backbones sau încarci direct modelul
-        # Adaptare folosind funcția ta existentă sau direct din transformers:
+        print(f"Incarcam modelul pentru {lang_key} din {checkpoint_path}...")
         try:
             from transformers import AutoModel
             from peft import PeftModel
-            # Pasul A: Încărcăm modelul de bază GBERT
-            base_model_name = "deepset/gbert-base"  # Fundația folosită la antrenament
-            print(f"Încărcăm modelul de bază: {base_model_name}...")
+            # Incarcam GBERT + LoRA
+            base_model_name = "deepset/gbert-base"
+            print(f"Incarcam modelul de baza: {base_model_name}...")
             base_model = AutoModel.from_pretrained(base_model_name)
-            # Pasul B: Aplicăm greutățile tale antrenate peste el
-            print(f"Atașăm adaptoarele LoRA din: {checkpoint_path}...")
+            
+            print(f"Atasam adaptoarele LoRA din: {checkpoint_path}...")
             de_backbone = PeftModel.from_pretrained(base_model, checkpoint_path)
-            # Mutăm pe placa video
+            # Mutam pe placa video
             de_backbone = de_backbone.to(self.device).eval()
         except Exception as e:
-            print(f"Eroare la încărcarea modelului PEFT: {e}")
+            print(f"Eroare la incarcarea modelului PEFT: {e}")
             return
 
-        # 3. Pregătim datasetul doar pentru germană
+        # Pregatim datasetul pentru germana
         data_dir = self.dataset_root
         labels_csv = data_dir / "Labels" / "labels_consensus.csv"
         transcripts_de_json = data_dir / "Transcription_de.json"
@@ -563,7 +559,6 @@ class EmbeddingExtractor:
         partition_map = {"train": "Train", "val": "Development", "dev": "Development", "test1": "Test1", "test2": "Test2"}
         dataset_partition = partition_map.get(partition.lower(), partition)
         
-        # Workaround: folosim 'text_en' ca modalities și transcripts_en_json pentru germană
         dataset = MSP_Podcast_Dataset(
             audio_root=str(data_dir / "Audios"),
             labels_csv=str(labels_csv),
@@ -571,16 +566,15 @@ class EmbeddingExtractor:
             partition=dataset_partition,
             modalities=["text_en"],
         )
-        # Vom extrage din sample["text_en"] dar vom salva ca text_de
         
-        # 4. Verificare de siguranță a ordinii și numărului de sample-uri
+        # Verificam ca numarul de sample-uri corespunde
         assert len(dataset) == len(embeddings_dict['labels']), \
-            "Numărul de sample-uri din datasetul curent nu corespunde cu fișierul existent!"
+            "Numarul de sample-uri din datasetul curent nu corespunde cu fisierul existent!"
             
         all_de_embeddings = []
         num_batches = (len(dataset) + self.batch_size - 1) // self.batch_size
         
-        # 5. Extragerea efectivă
+        # Extragem embeddings
         with torch.no_grad():
             for batch_idx in tqdm(range(num_batches), desc=f"Processing {lang_key} for {partition}"):
                 start_idx = batch_idx * self.batch_size
@@ -588,9 +582,6 @@ class EmbeddingExtractor:
                 
                 batch_texts_de = [dataset[idx]["text_en"] for idx in range(start_idx, end_idx)]
                 
-                # În funcție de cum e implementat backbone-ul tău (dacă primește listă de stringuri sau tokeni):
-                # Presupunem că folosești tokenizare în interiorul backbone-ului (ca la celelalte)
-                # Dacă folosești AutoModel direct, trebuie să și tokenizezi aici:
                 from transformers import AutoTokenizer
                 tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
                 inputs = tokenizer(batch_texts_de, padding=True, truncation=True, max_length=128, return_tensors="pt").to(self.device)
@@ -599,30 +590,30 @@ class EmbeddingExtractor:
                 # Extragem hidden states (last hidden state)
                 text_de_emb = outputs.last_hidden_state
                 
-                # Aplicăm aceeași regulă de pad/truncate la 100
+                # Aplicam aceeasi regula de pad/truncate la 100
                 text_de_emb = self._pad_or_truncate(text_de_emb, target_len=100).cpu()
                 all_de_embeddings.append(text_de_emb)
                 
-        # 6. Salvare înapoi în dicționarul principal
+        # Salvam in dictionar
         embeddings_dict[lang_key] = torch.cat(all_de_embeddings, dim=0)
         
         # Actualizare metadata
         embeddings_dict['metadata']['embedding_dims'][lang_key] = embeddings_dict[lang_key].shape[-1]
         embeddings_dict['metadata'][f'extraction_date_{lang_key}'] = datetime.now().isoformat()
         
-        print(f"\nSalvare fișier actualizat: {existing_file}")
+        print(f"\nSalvare fisier actualizat: {existing_file}")
         torch.save(embeddings_dict, existing_file)
-        print(f"✓ Gata! Forma {lang_key}: {embeddings_dict[lang_key].shape}")
+        print(f"[OK] Gata! Forma {lang_key}: {embeddings_dict[lang_key].shape}")
 
 
 class EmbeddingLoader:
-    """Utilitar pentru încărcarea embedding-urilor salvate."""
+    """Utilitar pentru incarcarea embedding-urilor salvate."""
     
     def __init__(self, embeddings_dir: str = "data/embeddings"):
         self.embeddings_dir = Path(embeddings_dir)
     
     def load_partition(self, partition: str) -> Dict:
-        """Încarcă embeddings pentru o partiție."""
+        """Incarca embeddings pentru o partitie."""
         embeddings_file = self.embeddings_dir / f"embeddings_{partition}.pt"
         
         if not embeddings_file.exists():
@@ -630,7 +621,7 @@ class EmbeddingLoader:
         
         embeddings_dict = torch.load(embeddings_file)
         
-        print(f"\n✓ Loaded embeddings for {partition}")
+        print(f"\n[OK] Loaded embeddings for {partition}")
         print(f"  Text EN: {embeddings_dict['text_en'].shape}")
         print(f"  Text ES: {embeddings_dict['text_es'].shape}")
         print(f"  Audio: {embeddings_dict['audio'].shape}")
@@ -639,7 +630,7 @@ class EmbeddingLoader:
         return embeddings_dict
     
     def load_all_partitions(self) -> Dict[str, Dict]:
-        """Încarcă embeddings pentru toate partițiile disponibile."""
+        """Incarca embeddings pentru toate partitiile disponibile."""
         partitions = ['train', 'val', 'test1']
         all_embeddings = {}
         
@@ -647,14 +638,14 @@ class EmbeddingLoader:
             try:
                 all_embeddings[partition] = self.load_partition(partition)
             except FileNotFoundError:
-                print(f"⚠ Skipping {partition} (not found)")
+                print(f"[!] Skipping {partition} (not found)")
         
         return all_embeddings
 
 def update_embeddings_with_val_arousal(output_dir: str | Path = 'MSP_Podcast/embeddings'):
     """
-    Adaugă valorile valence (EmoVal) și arousal (EmoAct) din labels_consensus.csv
-    în fișierele de embeddings existente, fără a regenera embeddingurile.
+    Adauga valorile valence (EmoVal) si arousal (EmoAct) din labels_consensus.csv
+    in fisierele de embeddings existente, fara a regenera embeddingurile.
     """
     import csv
     import torch
@@ -680,7 +671,7 @@ def update_embeddings_with_val_arousal(output_dir: str | Path = 'MSP_Podcast/emb
         print(f"Processing {embeddings_path} ...")
         data = torch.load(embeddings_path, map_location='cpu')
         if 'valence' in data and 'arousal' in data:
-            print(f"✓ {embeddings_path} already contains valence/arousal.")
+            print(f"[OK] {embeddings_path} already contains valence/arousal.")
             return
 
         file_ids = data['file_ids']
@@ -689,7 +680,7 @@ def update_embeddings_with_val_arousal(output_dir: str | Path = 'MSP_Podcast/emb
         for file_id in file_ids:
             key = str(file_id)
             if key not in label_lookup:
-                raise KeyError(f"Nu am găsit {file_id} în labels_consensus.csv")
+                raise KeyError(f"Nu am gasit {file_id} in labels_consensus.csv")
             emo_val, emo_act = label_lookup[key]
             valence.append(emo_val)
             arousal.append(emo_act)
@@ -697,7 +688,7 @@ def update_embeddings_with_val_arousal(output_dir: str | Path = 'MSP_Podcast/emb
         data['valence'] = torch.tensor(valence, dtype=torch.float32)
         data['arousal'] = torch.tensor(arousal, dtype=torch.float32)
         torch.save(data, embeddings_path)
-        print(f"✓ Updated {embeddings_path} with valence/arousal.")
+        print(f"[OK] Updated {embeddings_path} with valence/arousal.")
 
     base = Path(output_dir)
     labels_csv = Path('MSP_Podcast/Labels/labels_consensus.csv')
@@ -713,7 +704,7 @@ def main():
     parser.add_argument(
         '--add-val-arousal',
         action='store_true',
-        help='Adaugă valence/arousal din labels_consensus.json în embeddings_train.pt și embeddings_val.pt (fără a regenera embeddingurile) și oprește scriptul.'
+        help='Adauga valence/arousal din labels_consensus.json in embeddings_train.pt si embeddings_val.pt (fara a regenera embeddingurile) si opreste scriptul.'
     )
     parser.add_argument(
         '--partition',
@@ -836,10 +827,10 @@ def main():
     print("="*80 + "\n")
     
 
-    # Dacă se cere doar adăugarea valence/arousal, rulează utilitarul și oprește
+    # Daca se cere doar adaugarea valence/arousal, ruleaza utilitarul si opreste
     if args.add_val_arousal:
         update_embeddings_with_val_arousal(output_dir)
-        print("\nValence/arousal adăugate cu succes în fișierele de embeddings disponibile!\n")
+        print("\nValence/arousal adaugate cu succes in fisierele de embeddings disponibile!\n")
         return
 
     # Create extractor
@@ -861,7 +852,7 @@ def main():
     allowed_partitions = {'train', 'val', 'test1', 'test2', 'dev', 'all'}
     
     if args.add_german_only:
-        # LOGICA PENTRU ADĂUGAREA EXCLUSIVĂ A EMBEDDING-URILOR ÎN GERMANĂ
+        # adaugare exclusiva embeddings germana
         if args.partition == 'all':
             partitions = ['train', 'val', 'test1']
         else:
@@ -881,7 +872,7 @@ def main():
             )
             
     else:
-        # LOGICA ORIGINALĂ PENTRU EXTRAGEREA COMPLETĂ (Audio + EN + ES)
+        # extragere completa (audio + text)
         if args.partition == 'all':
             extractor.extract_all_partitions(save_individually=args.save_individually)
         else:

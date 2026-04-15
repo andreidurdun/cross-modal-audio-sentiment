@@ -89,7 +89,7 @@ def collect_embedding_inputs(
 
 
 def concordance_correlation_coefficient(y_true, y_pred):
-    """Returnează CCC pentru fiecare coloană și media lor (pentru shape [N,2])."""
+    """Returneaza CCC pentru fiecare coloana si media lor (pentru shape [N,2])."""
     y_true = np.asarray(y_true)
     y_pred = np.asarray(y_pred)
     mean_true = np.mean(y_true, axis=0)
@@ -175,7 +175,7 @@ class CCMTTrainer:
         self.warmup_steps = warmup_steps
         self.scheduler = get_linear_schedule_with_warmup(
             self.optimizer,
-            num_warmup_steps=warmup_steps, # 10% din antrenament e încălzire
+            num_warmup_steps=warmup_steps, # 10% din antrenament e incalzire
             num_training_steps=total_steps
         )
         
@@ -209,7 +209,7 @@ class CCMTTrainer:
         print(f"{'='*70}\n")
 
     def train_epoch(self) -> dict:
-        """Train pentru o epocă (regresie valence/arousal)."""
+        """Train pentru o epoca (regresie valence/arousal)."""
         self.model.train()
         total_loss = 0.0
         all_preds = []
@@ -348,11 +348,11 @@ class CCMTTrainer:
                 self.best_epoch = epoch
                 self.patience_counter = 0
                 self.save_checkpoint(epoch, is_best=True)
-                print(f"✓ New best model! Val Loss: {self.best_val_loss:.4f}")
+                print(f"[OK] New best model! Val Loss: {self.best_val_loss:.4f}")
             else:
                 self.patience_counter += 1
             if self.patience_counter >= self.early_stopping_patience:
-                print(f"\n⚠ Early stopping triggered after {epoch} epochs")
+                print(f"\n[!] Early stopping triggered after {epoch} epochs")
                 break
             if epoch % 5 == 0:
                 self.save_checkpoint(epoch, is_best=False)
@@ -402,12 +402,12 @@ class CCMTTrainer:
             checkpoint = torch.load(path, map_location=self.device)
             self.model.load_state_dict(checkpoint['model_state_dict'])
             self.best_epoch = checkpoint.get('best_epoch', self.best_epoch)
-            print(f"✓ Loaded best model from {path}")
+            print(f"[OK] Loaded best model from {path}")
         else:
-            print(f"⚠ No checkpoint found at {path}")
+            print(f"[!] No checkpoint found at {path}")
 
     def compute_test_metrics(self, test_metrics: dict) -> dict:
-        """Calculează metrici de regresie pentru best model."""
+        """Calculeaza metrici de regresie pentru best model."""
         y_true = test_metrics['labels']
         y_pred = test_metrics['predictions']
         ccc = concordance_correlation_coefficient(y_true, y_pred)
@@ -423,7 +423,7 @@ class CCMTTrainer:
         }
 
     def save_test_metrics(self, test_metrics: dict, train_time_minutes: float):
-        """Salvează metricile complete pe test pentru best model."""
+        """Salveaza metricile complete pe test pentru best model."""
         payload = {
             'timestamp': datetime.now().isoformat(),
             'best_epoch': self.best_epoch,
@@ -435,18 +435,18 @@ class CCMTTrainer:
         path = self.checkpoint_dir / 'best_model_test_metrics.json'
         with open(path, 'w') as f:
             json.dump(payload, f, indent=2)
-        print(f"✓ Saved full test metrics to {path}")
+        print(f"[OK] Saved full test metrics to {path}")
 
     def save_history(self):
         path = self.checkpoint_dir / 'training_history.json'
         with open(path, 'w') as f:
             json.dump(self.history, f, indent=2)
-        print(f"✓ Saved training history to {path}")
+        print(f"[OK] Saved training history to {path}")
 
     def save_loss_plot(self):
         """Salveaza graficul train/val loss la finalul antrenarii."""
         if not self.history['train_loss'] or not self.history['val_loss']:
-            print("⚠ No loss history available for plotting")
+            print("[!] No loss history available for plotting")
             return
 
         epochs = list(range(1, len(self.history['train_loss']) + 1))
@@ -464,10 +464,10 @@ class CCMTTrainer:
         plt.savefig(plot_path, format='pdf')
         plt.close()
 
-        print(f"✓ Saved loss plot to {plot_path}")
+        print(f"[OK] Saved loss plot to {plot_path}")
 
     def save_config(self):
-        """Salvează hiperparametrii de antrenare și parametrii modelului."""
+        """Salveaza hiperparametrii de antrenare si parametrii modelului."""
         config = {
             'timestamp': datetime.now().isoformat(),
             'device': self.device,
@@ -484,7 +484,7 @@ class CCMTTrainer:
         config_path = self.checkpoint_dir / 'training_config.json'
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
-        print(f"✓ Saved training config to {config_path}")
+        print(f"[OK] Saved training config to {config_path}")
 
 def main():
     parser = argparse.ArgumentParser(description="Train CCMT regression with selectable modalities")
@@ -529,9 +529,9 @@ def main():
     USE_COMPILE = bool(train_config["use_compile"])
     NUM_WORKERS = int(train_config["num_workers"])
     
-    # Optimizări CUDA
+    # Optimizari CUDA
     if DEVICE == "cuda":
-        torch.backends.cudnn.benchmark = True  # Auto-tune pentru performanță
+        torch.backends.cudnn.benchmark = True  # Auto-tune pentru performanta
         torch.backends.cuda.matmul.allow_tf32 = True  # TensorFloat-32 pentru matmul
         torch.backends.cudnn.allow_tf32 = True  # TensorFloat-32 pentru cuDNN
     
@@ -594,11 +594,11 @@ def main():
         modalities=modalities,
     )
     
-    # Compilare model (PyTorch 2.0+) - experimental, lăsat False din setări
+    # Compilare model (PyTorch 2.0+) - experimental, lasat False din setari
     if USE_COMPILE and hasattr(torch, 'compile'):
         print("Compiling model with torch.compile()...")
         model = torch.compile(model, mode='default')
-        print("✓ Model compiled")
+        print("[OK] Model compiled")
     
     print("\nLoading datasets...")
 
@@ -619,7 +619,7 @@ def main():
         modalities=modalities,
     )
     
-    # Creăm DataLoaders (Am lăsat num_workers=0, standard pentru stabilitate pe Windows la citire din memorie)
+    # Cream DataLoaders (Am lasat num_workers=0, standard pentru stabilitate pe Windows la citire din memorie)
     train_loader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
@@ -644,7 +644,7 @@ def main():
         pin_memory=True if DEVICE == "cuda" else False
     )
     
-    print(f"\n✓ Datasets loaded:")
+    print(f"\n[OK] Datasets loaded:")
     print(f"  Train: {len(train_dataset)} samples, {len(train_loader)} batches")
     print(f"  Val: {len(val_dataset)} samples, {len(val_loader)} batches")
     print(f"  Test: {len(test_dataset)} samples, {len(test_loader)} batches")

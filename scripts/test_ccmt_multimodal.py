@@ -1,6 +1,6 @@
 """
 Script de testare pentru modelul CCMT Multimodal.
-Evaluează pe datele de validare și salvează scorurile și graficele.
+Evalueaza pe datele de validare si salveaza scorurile si graficele.
 """
 from pathlib import Path
 from typing import Optional
@@ -81,7 +81,7 @@ class CCMTTester:
 
     @torch.no_grad()
     def evaluate(self, model, val_loader: DataLoader) -> dict:
-        """Evaluează modelul și calculează metrici."""
+        """Evalueaza modelul si calculeaza metrici."""
         model.eval()
         all_predictions = []
         all_labels = []
@@ -141,7 +141,7 @@ class CCMTTester:
         }
 
     def plot_confusion_matrix(self, cm, output_path):
-        """Plotează confusion matrix."""
+        """Ploteaza confusion matrix."""
         plt.figure(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
                    xticklabels=list(self.id2label.values()),
@@ -152,10 +152,10 @@ class CCMTTester:
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"✅ Confusion matrix saved: {output_path}")
+        print(f"[OK] Confusion matrix saved: {output_path}")
 
     def plot_metrics(self, results, output_path):
-        """Plotează metricile principale."""
+        """Ploteaza metricile principale."""
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         
         # F1 per class
@@ -206,7 +206,7 @@ class CCMTTester:
         plt.tight_layout()
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"✅ Metrics plot saved: {output_path}")
+        print(f"[OK] Metrics plot saved: {output_path}")
 
     def test(
         self,
@@ -216,7 +216,7 @@ class CCMTTester:
         batch_size: int = 32,
         output_dir: Path = Path("results/ccmt_multimodal"),
     ):
-        """Testează modelul și salvează rezultatele."""
+        """Testeaza modelul si salveaza rezultatele."""
         print("="*80)
         print("Testing CCMT Multimodal Model")
         print("="*80)
@@ -255,9 +255,9 @@ class CCMTTester:
                 model.load_state_dict(checkpoint['model_state_dict'], strict=False)
             else:
                 model.load_state_dict(checkpoint, strict=False)
-            print(f"✅ Model weights loaded from: {model_path}")
+            print(f"[OK] Model weights loaded from: {model_path}")
         else:
-            print(f"⚠️  Model weights not found at: {model_path}")
+            print(f"[!]  Model weights not found at: {model_path}")
         
         model = model.to(self.device)
         
@@ -276,7 +276,7 @@ class CCMTTester:
         with open(results_json_path, 'w') as f:
             results_to_save = {k: v for k, v in results.items() if k not in ['predictions', 'labels']}
             json.dump(results_to_save, f, indent=2)
-        print(f"✅ Results saved: {results_json_path}")
+        print(f"[OK] Results saved: {results_json_path}")
         
         # Create plots
         cm = np.array(results['confusion_matrix'])
@@ -360,7 +360,7 @@ def main():
         modalities=modalities,
     )
     
-    print(f"✅ Data loaded successfully!")
+    print(f"[OK] Data loaded successfully!")
     print(f"   Val: {len(val_dataset)} samples\n")
     
     # Create tester

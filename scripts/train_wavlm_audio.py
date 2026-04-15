@@ -62,7 +62,7 @@ class AudioTrainerWavLM:
         )
 
         model.config.use_cache = False
-        # Gradient checkpointing disabled pentru viteză (trade-off: mai mult VRAM)
+        # Gradient checkpointing disabled pentru viteza (trade-off: mai mult VRAM)
         # model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
         print("Configuring LoRA...")

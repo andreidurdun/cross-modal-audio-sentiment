@@ -11,21 +11,21 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 @dataclass
 
 class NLLBTranslatorConfig:
-    # 600M este rapid și bun. Poți încerca și "facebook/nllb-200-distilled-1.3B" dacă ai VRAM liber
+    # 600M este rapid si bun. Poti incerca si "facebook/nllb-200-distilled-1.3B" daca ai VRAM liber
     model_name: str = "facebook/nllb-200-distilled-600M"
-    src_lang: str = "eng_Latn"   # Limba sursă: Engleză
-    tgt_lang: str = "spa_Latn"   # Limba țintă: Spaniolă
+    src_lang: str = "eng_Latn"   # Limba sursa: Engleza
+    tgt_lang: str = "spa_Latn"   # Limba tinta: Spaniola
     max_length: int = 512
 
 
 class NLLBTranslatorConfigFR(NLLBTranslatorConfig):
-    """Config pentru traducere engleză-franceză cu NLLB."""
+    """Config pentru traducere engleza-franceza cu NLLB."""
     def __init__(self, model_name: str = "facebook/nllb-200-distilled-600M", src_lang: str = "eng_Latn", max_length: int = 512):
         super().__init__(model_name=model_name, src_lang=src_lang, tgt_lang="fra_Latn", max_length=max_length)
 
 
 class NLLBTranslatorConfigDE(NLLBTranslatorConfig):
-    """Config pentru traducere engleză-germană cu NLLB."""
+    """Config pentru traducere engleza-germana cu NLLB."""
     def __init__(self, model_name: str = "facebook/nllb-200-distilled-600M", src_lang: str = "eng_Latn", max_length: int = 512):
         super().__init__(model_name=model_name, src_lang=src_lang, tgt_lang="deu_Latn", max_length=max_length)
 
@@ -37,30 +37,30 @@ class NLLBTranslator:
     def __init__(self, config: Optional[NLLBTranslatorConfig] = None) -> None:
         self.config = config or NLLBTranslatorConfig()
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        # OPTIMIZAREA 1: FP16 (Obligatoriu pentru RTX 4060 pentru viteză maximă)
+        # FP16 pe GPU pentru viteza
         self.compute_dtype = torch.float16 if self.device == "cuda" else torch.float32
 
         print(f"Loading {self.config.model_name} on {self.device} in {self.compute_dtype}...")
 
-        # NLLB necesită specificarea limbii sursă direct în tokenizer
+        # NLLB necesita specificarea limbii sursa direct in tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.config.model_name, 
             src_lang=self.config.src_lang
         )
 
-        # Încărcăm modelul direct în formatul optimizat
+        # Incarcam modelul direct in formatul optimizat
         self.model = AutoModelForSeq2SeqLM.from_pretrained(
             self.config.model_name,
             dtype=self.compute_dtype
         ).to(self.device)
 
-        self.model.eval() # Modul de inferență (dezactivează dropout-ul)
+        self.model.eval() # Modul de inferenta (dezactiveaza dropout-ul)
 
-        # NLLB necesită ID-ul limbii țintă la momentul generării
+        # NLLB necesita ID-ul limbii tinta la momentul generarii
         self.tgt_lang_id = self.tokenizer.convert_tokens_to_ids(self.config.tgt_lang)
 
     def translate(self, text: str) -> str:
-        """Traduce un singur text (Folosește translate_batch pentru seturi de date mari)."""
+        """Traduce un singur text (Foloseste translate_batch pentru seturi de date mari)."""
         inputs = self.tokenizer(
             text,
             return_tensors="pt",
@@ -78,15 +78,11 @@ class NLLBTranslator:
         return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
     def translate_batch(self, texts: List[str]) -> List[str]:
-        """
-        OPTIMIZAREA 2: Traducere în Batch.
-        Aceasta este metoda pe care trebuie să o folosești pentru a procesa
-        transcripturile din MSP-Podcast rapid pe RTX 4060.
-        """
+        """Traducere in batch, recomandat pentru seturi mari de date."""
         if not texts:
             return []
 
-        # Tokenizăm o listă întreagă. Adăugăm padding pentru a egala lungimea tensorilor.
+        # Tokenizam o lista intreaga. Adaugam padding pentru a egala lungimea tensorilor.
         inputs = self.tokenizer(
             texts,
             return_tensors="pt",
@@ -102,20 +98,20 @@ class NLLBTranslator:
                 forced_bos_token_id=self.tgt_lang_id,
             )
 
-        # Decodificăm tot batch-ul deodată
+        # Decodificam tot batch-ul deodata
         return self.tokenizer.batch_decode(outputs, skip_special_tokens=True)
 
 
-# Pipeline pentru traducere engleză-germană
-# Pipeline pentru traducere engleză-germană
+# Pipeline pentru traducere engleza-germana
+# Pipeline pentru traducere engleza-germana
 class NLLBTranslatorDE(NLLBTranslator):
-    """Wrapper pentru traducere engleză-germană cu NLLB."""
+    """Wrapper pentru traducere engleza-germana cu NLLB."""
     def __init__(self, config: Optional[NLLBTranslatorConfigDE] = None) -> None:
         super().__init__(config or NLLBTranslatorConfigDE())
 
 
-# Pipeline pentru traducere engleză-franceză
+# Pipeline pentru traducere engleza-franceza
 class NLLBTranslatorFR(NLLBTranslator):
-    """Wrapper pentru traducere engleză-franceză cu NLLB."""
+    """Wrapper pentru traducere engleza-franceza cu NLLB."""
     def __init__(self, config: Optional[NLLBTranslatorConfigFR] = None) -> None:
         super().__init__(config or NLLBTranslatorConfigFR())

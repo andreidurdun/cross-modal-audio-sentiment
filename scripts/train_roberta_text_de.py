@@ -303,7 +303,7 @@ def main():
         labels_csv=str(labels_csv),
         transcripts_en_json=str(transcripts_de_json),
         partition="Train",
-        modalities=['text_en'],  # folosim text_en ca workaround pentru germană
+        modalities=['text_en'],  # folosim text_en ca workaround pentru germana
     )
     print("\n2. Loading Validation dataset...")
     val_dataset_msp = MSP_Podcast_Dataset(
@@ -311,7 +311,7 @@ def main():
         labels_csv=str(labels_csv),
         transcripts_en_json=str(transcripts_de_json),
         partition="Development",
-        modalities=['text_en'],  # folosim text_en ca workaround pentru germană
+        modalities=['text_en'],  # folosim text_en ca workaround pentru germana
     )
     print(f"\nData loaded successfully!")
     print(train_dataset_msp[0])
@@ -350,10 +350,10 @@ def main():
         )
     )
 
-    # Rulează automat scriptul pentru franceză după terminarea celui pentru germană
+    # Ruleaza automat scriptul pentru franceza dupa terminarea celui pentru germana
     import subprocess
     import sys
-    print("\nRulăm automat train_roberta_text_fr.py...")
+    print("\nRulam automat train_roberta_text_fr.py...")
     subprocess.run([sys.executable, str(Path(__file__).parent / "train_roberta_text_fr.py")], check=True)
 
 if __name__ == "__main__":
