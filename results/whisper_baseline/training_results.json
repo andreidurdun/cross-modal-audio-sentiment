@@ -1,0 +1,47 @@
+{
+  "model": "openai/whisper-base",
+  "best_val_f1_macro": 0.5970233304916933,
+  "training_time_minutes": 238.65463592211407,
+  "hyperparameters": {
+    "data_dir": "MSP_Podcast",
+    "checkpoint_dir": "checkpoints/whisper_baseline",
+    "model_name": "openai/whisper-base",
+    "num_labels": 3,
+    "num_epochs": 10,
+    "batch_size": 8,
+    "gradient_accumulation_steps": 4,
+    "learning_rate": 0.0001,
+    "warmup_ratio": 0.1,
+    "weight_decay": 0.01,
+    "max_grad_norm": 1.0,
+    "target_sample_rate": 16000,
+    "use_amp": true,
+    "num_workers": 0
+  },
+  "curves": {
+    "train_losses": [
+      0.9118359615134373,
+      0.867682652951944,
+      0.8034119329139287,
+      0.7139892244964374,
+      0.5833955160900757,
+      0.4090608733420073,
+      0.23995326180340204,
+      0.12700209010505653,
+      0.0673702343265114,
+      0.028073737153389948
+    ],
+    "val_losses": [
+      0.9132789791231603,
+      0.8732759795489292,
+      0.8437934476430514,
+      0.8685230186465258,
+      0.9662659341691036,
+      1.3113858323048158,
+      1.6812636796574028,
+      2.4283253356074503,
+      3.954980245903923,
+      5.281609888347137
+    ]
+  }
+}
