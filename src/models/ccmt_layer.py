@@ -118,7 +118,7 @@ class CascadedCrossModalTransformer(nn.Module):
             self.mlp_head = nn.Sequential(
                 nn.LayerNorm(dim),
                 nn.Linear(dim, num_outputs),
-                nn.Softmax(dim=-1)
+                nn.Identity()
             )
         else:
             self.mlp_head = nn.Sequential(

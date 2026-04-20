@@ -163,12 +163,10 @@ class AudioDistillationTrainer:
     @staticmethod
     def compute_kd_loss(
         student_logits: torch.Tensor,
-        teacher_probs: torch.Tensor,
+        teacher_logits: torch.Tensor,
         temperature: float,
     ) -> torch.Tensor:
-        eps = 1e-8
-        teacher_probs = teacher_probs.clamp_min(eps)
-        softened_teacher = torch.softmax(torch.log(teacher_probs) / temperature, dim=-1)
+        softened_teacher = torch.softmax(teacher_logits / temperature, dim=-1)
         student_log_probs = torch.log_softmax(student_logits / temperature, dim=-1)
         return torch.nn.functional.kl_div(
             student_log_probs,
@@ -217,10 +215,10 @@ class AudioDistillationTrainer:
                 student_logits = student_outputs.logits.float().view(-1, self.num_labels)
 
                 with torch.no_grad():
-                    teacher_probs = teacher_model(**teacher_inputs).float()
+                    teacher_logits = teacher_model(**teacher_inputs).float()
 
                 ce_loss = ce_loss_fn(student_logits, labels.view(-1))
-                kd_loss = self.compute_kd_loss(student_logits, teacher_probs, temperature)
+                kd_loss = self.compute_kd_loss(student_logits, teacher_logits, temperature)
                 loss = ((1.0 - alpha) * ce_loss + alpha * kd_loss) / gradient_accumulation_steps
 
             if use_amp:

@@ -3,6 +3,8 @@ param(
     [string]$Partition = 'test1',
     [string]$PythonExe,
     [string]$RunName = (Get-Date -Format 'yyyyMMdd_HHmmss'),
+    [int]$TranscriptionBatchSize = 8,
+    [int]$TranscriptionSaveEvery = 100,
     [switch]$Resume,
     [switch]$AllowOverwrite
 )
@@ -213,6 +215,12 @@ $embeddingSpecs = @(
         Modalities = 'text_en,text_fr,audio'
         OutputDir = (Join-Path $runRoot 'embeddings_text_en_text_fr_audio')
         ReuseFrom = (Join-Path $runRoot 'embeddings_text_en_audio')
+    },
+    @{
+        Name = 'Embeddings classification: text_en,text_es,text_de,text_fr,audio'
+        Modalities = 'text_en,text_es,text_de,text_fr,audio'
+        OutputDir = (Join-Path $runRoot 'embeddings_text_en_text_es_text_de_text_fr_audio')
+        ReuseFrom = (Join-Path $runRoot 'embeddings_text_en_audio')
     }
 )
 
@@ -235,7 +243,9 @@ if (-not $skipEnglish) {
     Invoke-PythonStep -Name 'Transcriere in engleza pentru test1' -Arguments @(
         'scripts/01_run_transcription.py',
         '--partitions', 'Test1',
-        '--output-json', $transcriptionEn
+        '--output-json', $transcriptionEn,
+        '--batch-size', $TranscriptionBatchSize,
+        '--save-every', $TranscriptionSaveEvery
     )
 }
 
@@ -302,5 +312,7 @@ Write-Host ('=' * 90)
 Write-Host 'Pipeline finalizat'
 Write-Host ('=' * 90)
 Write-Host "Resume mode: $($Resume.IsPresent)"
+Write-Host "Transcription batch size: $TranscriptionBatchSize"
+Write-Host "Transcription save every: $TranscriptionSaveEvery"
 Write-Host "Artefacte transcripturi: $transcriptsDir"
 Write-Host "Artefacte embeddings: $runRoot"

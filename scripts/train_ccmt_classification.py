@@ -529,7 +529,7 @@ def main():
         "--modalities",
         type=str,
         default="text_en,text_es,audio",
-        help="Lista de modalitati separate prin virgula. Exemple: text_en,audio sau text_en,text_fr,audio",
+        help="Lista de modalitati separate prin virgula. Exemple: text_en,audio; text_en,text_fr,audio; text_en,text_es,text_de,text_fr,audio",
     )
     parser.add_argument(
         "--checkpoint-dir",
@@ -553,8 +553,8 @@ def main():
     modality_suffix = build_modality_suffix(modalities)
 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    BATCH_SIZE = int(train_config["batch_size"])
-    GRADIENT_ACCUMULATION_STEPS = int(train_config["gradient_accumulation_steps"])
+    BATCH_SIZE = 16 #int(train_config["batch_size"])
+    GRADIENT_ACCUMULATION_STEPS = 4 #int(train_config["gradient_accumulation_steps"])
     LEARNING_RATE = float(train_config["learning_rate"])
     NUM_EPOCHS = int(train_config["num_epochs"])
     USE_AMP = bool(train_config["use_amp"])
@@ -626,7 +626,7 @@ def main():
         modalities=modalities,
     )
     
-    # Compilare model (PyTorch 2.0+) - experimental, lasat False din setari
+  
     if USE_COMPILE and hasattr(torch, 'compile'):
         print("Compiling model with torch.compile()...")
         model = torch.compile(model, mode='default')

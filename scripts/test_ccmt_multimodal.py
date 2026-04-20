@@ -306,7 +306,7 @@ def main():
         "--modalities",
         type=str,
         default=None,
-        help="Lista de modalitati separate prin virgula. Daca lipseste, se citeste din training_config.json sau se foloseste text_en,text_es,audio.",
+        help="Lista de modalitati separate prin virgula. Exemple: text_en,text_fr,audio sau text_en,text_es,text_de,text_fr,audio. Daca lipseste, se citeste din training_config.json sau se foloseste text_en,text_es,audio.",
     )
     parser.add_argument(
         "--checkpoint-dir",
