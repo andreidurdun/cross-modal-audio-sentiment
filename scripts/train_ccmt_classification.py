@@ -553,8 +553,8 @@ def main():
     modality_suffix = build_modality_suffix(modalities)
 
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    BATCH_SIZE = 16 #int(train_config["batch_size"])
-    GRADIENT_ACCUMULATION_STEPS = 4 #int(train_config["gradient_accumulation_steps"])
+    BATCH_SIZE = int(train_config["batch_size"])
+    GRADIENT_ACCUMULATION_STEPS = int(train_config["gradient_accumulation_steps"])
     LEARNING_RATE = float(train_config["learning_rate"])
     NUM_EPOCHS = int(train_config["num_epochs"])
     USE_AMP = bool(train_config["use_amp"])

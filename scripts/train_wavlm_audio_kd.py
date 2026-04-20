@@ -502,7 +502,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train a WavLM student via knowledge distillation from a CCMT teacher")
     parser.add_argument("--teacher-checkpoint-dir", type=str, required=True, help="Checkpoint directory containing the trained CCMT teacher")
     parser.add_argument("--teacher-embeddings-dir", type=str, required=True, help="Embeddings directory used by the CCMT teacher")
-    parser.add_argument("--teacher-modalities", type=str, default="text_en,text_es,audio", help="Comma-separated modalities used by the teacher")
+    parser.add_argument("--teacher-modalities", type=str, default="text_en,text_fr,audio", help="Comma-separated modalities used by the teacher")
     parser.add_argument("--checkpoint-dir", type=str, default="checkpoints/wavlm_audio_kd", help="Output checkpoint directory for the distilled student")
     parser.add_argument("--alpha", type=float, default=None, help="Weight for the KD loss term")
     parser.add_argument("--temperature", type=float, default=None, help="Distillation temperature")
