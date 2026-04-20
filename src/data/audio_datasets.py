@@ -99,6 +99,7 @@ class AudioWaveLMDataset(Dataset):
         batch = {
             "input_values": inputs["input_values"].squeeze(0),
             "labels": label_tensor,
+            "file_id": sample.get("file_id"),
         }
 
         if self.include_attention_mask:

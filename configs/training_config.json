@@ -72,6 +72,18 @@
     "gradient_accumulation_steps": 2,
     "use_amp": true
   },
+  "wavlm_audio_kd": {
+    "num_epochs": 5,
+    "batch_size": 16,
+    "learning_rate": 0.0003,
+    "lora_r": 8,
+    "lora_alpha": 16,
+    "gradient_accumulation_steps": 2,
+    "use_amp": true,
+    "num_workers": 0,
+    "temperature": 2.0,
+    "alpha": 0.5
+  },
   "wavlm_audio_regression": {
     "num_epochs": 5,
     "batch_size": 16,

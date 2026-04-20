@@ -1,6 +1,7 @@
 """Batch transcription entry point."""
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import json
 import sys
@@ -24,6 +25,12 @@ DEFAULT_MAX_FILES: int | None = None
 DEFAULT_SEED = 42
 DEFAULT_OUTPUT_EN_DIR = Path("MSP_Podcast/Transcription_en")
 DEFAULT_OUTPUT_JSON = Path("MSP_Podcast/Transcription_en.json")
+
+
+def parse_partitions(partitions_arg: str | None) -> list[str]:
+    if not partitions_arg:
+        return list(DEFAULT_PARTITIONS)
+    return [item.strip() for item in partitions_arg.split(",") if item.strip()]
 
 
 def filter_partition_rows(df: pd.DataFrame, partition: str, max_files: int | None) -> pd.DataFrame:
@@ -113,4 +120,43 @@ def run_transcribe(
 
 
 if __name__ == "__main__":
-    run_transcribe()
+    parser = argparse.ArgumentParser(description="Generate English transcripts for selected MSP-Podcast partitions")
+    parser.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=DEFAULT_DATASET_ROOT,
+        help="Dataset root directory. Default: MSP_Podcast",
+    )
+    parser.add_argument(
+        "--partitions",
+        type=str,
+        default=",".join(DEFAULT_PARTITIONS),
+        help="Comma-separated partitions to process. Example: Train,Development,Test1",
+    )
+    parser.add_argument(
+        "--max-files",
+        type=int,
+        default=DEFAULT_MAX_FILES,
+        help="Optional limit for number of files per partition.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="Random seed.",
+    )
+    parser.add_argument(
+        "--output-json",
+        type=Path,
+        default=DEFAULT_OUTPUT_JSON,
+        help="Output JSON path for generated transcripts.",
+    )
+    args = parser.parse_args()
+
+    run_transcribe(
+        dataset_root=args.dataset_root,
+        partitions=parse_partitions(args.partitions),
+        max_files=args.max_files,
+        seed=args.seed,
+        output_json=args.output_json,
+    )
