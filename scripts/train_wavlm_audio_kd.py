@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import time
 import warnings
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -33,6 +34,7 @@ from src.data.distillation_dataset import AudioTeacherDistillationDataset
 from src.data.precomputed_embeddings_dataset import PrecomputedEmbeddingsDataset
 from src.models import load_ccmt_only_model
 from src.utils.config import get_training_config
+from src.utils.metrics import compute_classification_metrics
 
 
 SUPPORTED_MODALITIES = ["text_en", "text_es", "text_de", "text_fr", "audio"]
@@ -134,11 +136,11 @@ class AudioDistillationTrainer:
         embedding_dims = sample_dataset.get_embedding_dims()
         model = load_ccmt_only_model(
             device=self.device,
-            text_en_dim=embedding_dims.get("text_en", teacher_config.get("text_en_dim", 768)),
-            text_es_dim=embedding_dims.get("text_es", teacher_config.get("text_es_dim", 768)),
-            text_de_dim=embedding_dims.get("text_de", teacher_config.get("text_de_dim", 768)),
-            text_fr_dim=embedding_dims.get("text_fr", teacher_config.get("text_fr_dim", 768)),
-            audio_dim=embedding_dims.get("audio", teacher_config.get("audio_dim", 768)),
+            text_en_dim=int(embedding_dims.get("text_en") or teacher_config.get("text_en_dim", 768)),
+            text_es_dim=int(embedding_dims.get("text_es") or teacher_config.get("text_es_dim", 768)),
+            text_de_dim=int(embedding_dims.get("text_de") or teacher_config.get("text_de_dim", 768)),
+            text_fr_dim=int(embedding_dims.get("text_fr") or teacher_config.get("text_fr_dim", 768)),
+            audio_dim=int(embedding_dims.get("audio") or teacher_config.get("audio_dim", 768)),
             num_classes=teacher_config.get("num_classes", 3),
             ccmt_dim=teacher_config.get("ccmt_dim", 768),
             num_patches_per_modality=teacher_config.get("num_patches_per_modality", 100),
@@ -209,7 +211,7 @@ class AudioDistillationTrainer:
             labels = batch["labels"].to(self.device, non_blocking=True)
             teacher_inputs = collect_teacher_inputs(batch, teacher_modalities, self.device)
 
-            autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type="cuda") if use_amp else nullcontext()
+            autocast_ctx = torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp) if use_amp else nullcontext()
             with autocast_ctx:
                 student_outputs = student_model(input_values=input_values, attention_mask=attention_mask)
                 student_logits = student_outputs.logits.float().view(-1, self.num_labels)
@@ -263,10 +265,9 @@ class AudioDistillationTrainer:
         }
 
     @torch.no_grad()
-    def evaluate(self, student_model, val_loader, use_amp, class_weights: Optional[torch.Tensor] = None) -> tuple:
+    def evaluate(self, student_model, val_loader, use_amp, class_weights: Optional[torch.Tensor] = None) -> dict:
         student_model.eval()
         total_loss = 0.0
-        total_samples = 0
         all_predictions = []
         all_labels = []
 
@@ -278,24 +279,62 @@ class AudioDistillationTrainer:
             attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
 
-            autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type="cuda") if use_amp else nullcontext()
+            autocast_ctx = torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=use_amp) if use_amp else nullcontext()
             with autocast_ctx:
                 outputs = student_model(input_values=input_values, attention_mask=attention_mask)
                 logits = outputs.logits.float().view(-1, self.num_labels)
                 labels_flat = labels.view(-1)
                 loss = loss_fn(logits, labels_flat)
 
-            batch_size = labels_flat.size(0)
-            total_loss += loss.item() * batch_size
-            total_samples += batch_size
+            total_loss += loss.item()
             predictions = logits.argmax(dim=-1)
             all_predictions.extend(predictions.cpu().numpy())
             all_labels.extend(labels_flat.cpu().numpy())
 
-        avg_loss = total_loss / total_samples
-        accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
-        f1_macro = f1_score(all_labels, all_predictions, average="macro", zero_division=0)
-        return avg_loss, accuracy, f1_macro
+        return compute_classification_metrics(
+            labels=np.array(all_labels),
+            predictions=np.array(all_predictions),
+            id2label=self.id2label,
+            total_loss=total_loss,
+            num_batches=len(val_loader),
+        )
+
+    def _save_confusion_matrix_plot(self, confusion_matrix_values: list[list[int]], output_path: Path) -> None:
+        labels = [self.id2label[index] for index in sorted(self.id2label)]
+        cm = np.array(confusion_matrix_values)
+        plt.figure(figsize=(8, 6))
+        plt.imshow(cm, interpolation="nearest", cmap="Blues")
+        plt.title("Validation Confusion Matrix")
+        plt.colorbar()
+        tick_positions = np.arange(len(labels))
+        plt.xticks(tick_positions, labels, rotation=45, ha="right")
+        plt.yticks(tick_positions, labels)
+
+        threshold = cm.max() / 2.0 if cm.size else 0.0
+        for row_index in range(cm.shape[0]):
+            for col_index in range(cm.shape[1]):
+                plt.text(
+                    col_index,
+                    row_index,
+                    str(cm[row_index, col_index]),
+                    ha="center",
+                    va="center",
+                    color="white" if cm[row_index, col_index] > threshold else "black",
+                )
+
+        plt.ylabel("True label")
+        plt.xlabel("Predicted label")
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.close()
+
+    def _save_confusion_matrix_csv(self, confusion_matrix_values: list[list[int]], output_path: Path) -> None:
+        labels = [self.id2label[index] for index in sorted(self.id2label)]
+        with output_path.open("w", newline="", encoding="utf-8") as file_handle:
+            writer = csv.writer(file_handle)
+            writer.writerow(["true\\pred", *labels])
+            for label_name, row in zip(labels, confusion_matrix_values):
+                writer.writerow([label_name, *row])
 
     def _plot_training_curves(self, history: dict, checkpoint_dir: Path):
         epochs = range(1, len(history["train_loss"]) + 1)
@@ -369,6 +408,7 @@ class AudioDistillationTrainer:
         )
 
         best_val_f1 = 0.0
+        best_metrics: dict[str, object] = {}
         history = {
             "train_loss": [],
             "train_ce_loss": [],
@@ -405,14 +445,17 @@ class AudioDistillationTrainer:
                 gradient_accumulation_steps=gradient_accumulation_steps,
                 class_weights=class_weights,
             )
-            val_loss, val_acc, val_f1 = self.evaluate(student_model, val_loader, use_amp, class_weights)
+            val_metrics = self.evaluate(student_model, val_loader, use_amp, class_weights)
+            val_loss = float(val_metrics["avg_loss"])
+            val_acc = float(val_metrics["accuracy"])
+            val_f1 = float(val_metrics["f1_macro"])
 
             history["train_loss"].append(float(train_metrics["loss"]))
             history["train_ce_loss"].append(float(train_metrics["ce_loss"]))
             history["train_kd_loss"].append(float(train_metrics["kd_loss"]))
-            history["val_loss"].append(float(val_loss))
-            history["val_acc"].append(float(val_acc))
-            history["val_f1"].append(float(val_f1))
+            history["val_loss"].append(val_loss)
+            history["val_acc"].append(val_acc)
+            history["val_f1"].append(val_f1)
 
             print(
                 f"Train Loss: {train_metrics['loss']:.4f} | CE: {train_metrics['ce_loss']:.4f} | "
@@ -423,14 +466,38 @@ class AudioDistillationTrainer:
             if val_f1 > best_val_f1:
                 best_val_f1 = val_f1
                 best_model_path = checkpoint_dir / "best_model"
+                best_metrics = {
+                    "epoch": epoch + 1,
+                    "val_loss": val_loss,
+                    "val_accuracy": val_acc,
+                    "val_f1_macro": val_f1,
+                    "val_f1_weighted": float(val_metrics["f1_weighted"]),
+                    "val_precision_macro": float(val_metrics["precision_macro"]),
+                    "val_recall_macro": float(val_metrics["recall_macro"]),
+                    "confusion_matrix": val_metrics["confusion_matrix"],
+                    "f1_per_class": val_metrics["f1_per_class"],
+                }
                 print(f"New best distilled student! F1 Macro: {val_f1:.4f} - Saving...")
                 try:
-                    merged_model = student_model.merge_and_unload() if hasattr(student_model, "merge_and_unload") else student_model
-                    merged_model.save_pretrained(best_model_path)
+                    merged_model: Any = student_model
+                    merge_and_unload = getattr(student_model, "merge_and_unload", None)
+                    if callable(merge_and_unload):
+                        merged_model = merge_and_unload()
+                    merged_model.save_pretrained(str(best_model_path))
                 except Exception as exc:
                     print(f"[WARN] Could not merge student LoRA adapters ({exc}). Saving adapter-only checkpoint.")
-                    student_model.save_pretrained(best_model_path)
+                    student_model.save_pretrained(str(best_model_path))
                 self.feature_extractor.save_pretrained(best_model_path)
+                with (checkpoint_dir / "best_model_metrics.json").open("w", encoding="utf-8") as file_handle:
+                    json.dump(best_metrics, file_handle, indent=2)
+                self._save_confusion_matrix_plot(
+                    val_metrics["confusion_matrix"],
+                    checkpoint_dir / "best_model_confusion_matrix.png",
+                )
+                self._save_confusion_matrix_csv(
+                    val_metrics["confusion_matrix"],
+                    checkpoint_dir / "best_model_confusion_matrix.csv",
+                )
 
         elapsed_seconds = time.time() - start_time
         training_results = {
@@ -439,9 +506,7 @@ class AudioDistillationTrainer:
                 "minutes": elapsed_seconds / 60.0,
                 "hours": elapsed_seconds / 3600.0,
             },
-            "best_model_metrics": {
-                "val_f1_macro": float(best_val_f1),
-            },
+            "best_model_metrics": best_metrics or {"val_f1_macro": float(best_val_f1)},
             "distillation_hyperparameters": {
                 "alpha": alpha,
                 "temperature": temperature,

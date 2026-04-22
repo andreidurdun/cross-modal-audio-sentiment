@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 import time
 import argparse
+import csv
 
 import torch
 from torch import nn
@@ -363,6 +364,7 @@ class CCMTTrainer:
                 self.best_epoch = epoch
                 self.patience_counter = 0
                 self.save_checkpoint(epoch, is_best=True)
+                self.save_best_validation_metrics(epoch, val_metrics)
                 print(f"[OK] New best model! F1: {self.best_val_f1:.4f}")
             else:
                 self.patience_counter += 1
@@ -424,6 +426,55 @@ class CCMTTrainer:
         else:
             path = self.checkpoint_dir / f'checkpoint_epoch_{epoch}.pt'
             torch.save(checkpoint, path)
+
+    def save_best_validation_metrics(self, epoch: int, val_metrics: dict) -> None:
+        confusion = confusion_matrix(val_metrics['labels'], val_metrics['predictions']).tolist()
+        payload = {
+            'timestamp': datetime.now().isoformat(),
+            'epoch': epoch,
+            'val_loss': float(val_metrics['loss']),
+            'val_accuracy': float(val_metrics['accuracy']),
+            'val_f1_macro': float(val_metrics['f1_macro']),
+            'confusion_matrix': confusion,
+        }
+
+        json_path = self.checkpoint_dir / 'best_model_validation_metrics.json'
+        with open(json_path, 'w') as file_handle:
+            json.dump(payload, file_handle, indent=2)
+
+        labels = ['unsatisfied', 'neutral', 'satisfied']
+        csv_path = self.checkpoint_dir / 'best_model_confusion_matrix.csv'
+        with open(csv_path, 'w', newline='', encoding='utf-8') as file_handle:
+            writer = csv.writer(file_handle)
+            writer.writerow(['true\\pred', *labels])
+            for label_name, row in zip(labels, confusion):
+                writer.writerow([label_name, *row])
+
+        cm = np.array(confusion)
+        png_path = self.checkpoint_dir / 'best_model_confusion_matrix.png'
+        plt.figure(figsize=(8, 6))
+        plt.imshow(cm, interpolation='nearest', cmap='Blues')
+        plt.title('Best Validation Confusion Matrix')
+        plt.colorbar()
+        tick_positions = np.arange(len(labels))
+        plt.xticks(tick_positions, labels, rotation=45, ha='right')
+        plt.yticks(tick_positions, labels)
+        threshold = cm.max() / 2.0 if cm.size else 0.0
+        for row_index in range(cm.shape[0]):
+            for col_index in range(cm.shape[1]):
+                plt.text(
+                    col_index,
+                    row_index,
+                    str(cm[row_index, col_index]),
+                    ha='center',
+                    va='center',
+                    color='white' if cm[row_index, col_index] > threshold else 'black',
+                )
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+        plt.tight_layout()
+        plt.savefig(png_path, dpi=300, bbox_inches='tight')
+        plt.close()
 
     def load_best_checkpoint(self):
         path = self.checkpoint_dir / 'best_model.pt'

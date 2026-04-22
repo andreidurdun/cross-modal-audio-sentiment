@@ -1,0 +1,144 @@
+{
+  "device": "cuda",
+  "batch_size": 8,
+  "warmup": 2,
+  "repeats": 5,
+  "ccmt_input_mode": "wav-end-to-end",
+  "models": {
+    "wavlm_audio_kd_text_en_text_fr_audio_retrained_teacher": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 211.32034002803266,
+      "min_inference_ms": 210.7769000576809,
+      "max_inference_ms": 211.9937000097707,
+      "throughput_samples_per_sec": 37.857217146909576,
+      "model_type": "audio-classification",
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\wavlm_audio_kd_text_en_text_fr_audio_retrained_teacher"
+    },
+    "ccmt_multimodal_text_en_audio": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 3404.8389000585303,
+      "min_inference_ms": 3372.6805000333115,
+      "max_inference_ms": 3433.811900089495,
+      "throughput_samples_per_sec": 2.3495972158513805,
+      "model_type": "ccmt-classification",
+      "modalities": [
+        "text_en",
+        "audio"
+      ],
+      "includes_backbones": true,
+      "ccmt_input_mode": "wav-end-to-end",
+      "includes_transcription": true,
+      "includes_translation": false,
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\ccmt_multimodal_text_en_audio"
+    },
+    "ccmt_multimodal_text_en_text_de_audio": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 27714.758720016107,
+      "min_inference_ms": 27458.64490000531,
+      "max_inference_ms": 28116.627100040205,
+      "throughput_samples_per_sec": 0.28865486727915307,
+      "model_type": "ccmt-classification",
+      "modalities": [
+        "text_en",
+        "text_de",
+        "audio"
+      ],
+      "includes_backbones": true,
+      "ccmt_input_mode": "wav-end-to-end",
+      "includes_transcription": true,
+      "includes_translation": true,
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\ccmt_multimodal_text_en_text_de_audio"
+    },
+    "ccmt_multimodal_text_en_text_fr_audio": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 25082.21808001399,
+      "min_inference_ms": 22514.996299985796,
+      "max_inference_ms": 28079.740400076844,
+      "throughput_samples_per_sec": 0.31895105825487413,
+      "model_type": "ccmt-classification",
+      "modalities": [
+        "text_en",
+        "text_fr",
+        "audio"
+      ],
+      "includes_backbones": true,
+      "ccmt_input_mode": "wav-end-to-end",
+      "includes_transcription": true,
+      "includes_translation": true,
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\ccmt_multimodal_text_en_text_fr_audio"
+    },
+    "roberta_text_de": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 139.56048002000898,
+      "min_inference_ms": 139.13550006691366,
+      "max_inference_ms": 139.974300051108,
+      "throughput_samples_per_sec": 57.32281802737443,
+      "model_type": "text-classification",
+      "modality": "text_de",
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\roberta_text_de"
+    },
+    "roberta_text_en": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 27.32380002271384,
+      "min_inference_ms": 24.008600041270256,
+      "max_inference_ms": 39.12920004222542,
+      "throughput_samples_per_sec": 292.78504429653736,
+      "model_type": "text-classification",
+      "modality": "text_en",
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\roberta_text_en"
+    },
+    "roberta_text_es": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 138.63638003822416,
+      "min_inference_ms": 138.14450008794665,
+      "max_inference_ms": 139.24960000440478,
+      "throughput_samples_per_sec": 57.704911205805274,
+      "model_type": "text-classification",
+      "modality": "text_es",
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\roberta_text_es"
+    },
+    "roberta_text_fr": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 138.23841998819262,
+      "min_inference_ms": 137.7720000455156,
+      "max_inference_ms": 138.62649991642684,
+      "throughput_samples_per_sec": 57.87103180637702,
+      "model_type": "text-classification",
+      "modality": "text_fr",
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\roberta_text_fr"
+    },
+    "wavlm_audio": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 213.5462800040841,
+      "min_inference_ms": 210.66159999463707,
+      "max_inference_ms": 221.92320006433874,
+      "throughput_samples_per_sec": 37.46260529495994,
+      "model_type": "audio-classification",
+      "checkpoint_dir": "C:\\Users\\andre\\Desktop\\Proiect_Licenta\\checkpoints\\wavlm_audio"
+    },
+    "ccmt_multimodal_text_en_text_es_audio": {
+      "batch_size": 8.0,
+      "mean_inference_ms": 30112.354120006785,
+      "min_inference_ms": 29367.778499959968,
+      "max_inference_ms": 31594.060700037517,
+      "throughput_samples_per_sec": 0.2656716897030898,
+      "model_type": "ccmt-classification",
+      "modalities": [
+        "text_en",
+        "text_es",
+        "audio"
+      ],
+      "includes_backbones": true,
+      "ccmt_input_mode": "wav-end-to-end",
+      "includes_transcription": true,
+      "includes_translation": true,
+      "checkpoint_dir": "checkpoints\\ccmt_multimodal_text_en_text_es_audio"
+    },
+    "ccmt_multimodal_text_en_text_es_text_de_text_fr_audio": {
+      "checkpoint_dir": "checkpoints\\ccmt_multimodal_text_en_text_es_text_de_text_fr_audio",
+      "error": "estimare 76000ms     CUDA out of memory. Tried to allocate 502.00 MiB. GPU 0 has a total capacity of 8.00 GiB of which 0 bytes is free. Of the allocated memory 13.57 GiB is allocated by PyTorch, and 55.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+    
+    }
+
+  }
+}

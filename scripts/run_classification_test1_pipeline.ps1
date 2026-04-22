@@ -3,7 +3,7 @@ param(
     [string]$Partition = 'test1',
     [string]$PythonExe,
     [string]$RunName = (Get-Date -Format 'yyyyMMdd_HHmmss'),
-    [int]$TranscriptionBatchSize = 8,
+    [int]$TranscriptionBatchSize = 32,
     [int]$TranscriptionSaveEvery = 100,
     [switch]$Resume,
     [switch]$AllowOverwrite

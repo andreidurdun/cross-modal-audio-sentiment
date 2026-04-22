@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional
 from contextlib import nullcontext
+import csv
 import os
 
 import torch
@@ -38,6 +39,7 @@ from tqdm.auto import tqdm
 from src.data.dataset import MSP_Podcast_Dataset
 from src.data.audio_datasets import AudioWaveLMDataset, AudioCollator
 from src.utils.config import get_training_config
+from src.utils.metrics import compute_classification_metrics
 
 class AudioTrainerWavLM:
     def __init__(self, model_name: str = "microsoft/wavlm-base-plus", num_labels: int = 3, device: Optional[str] = None):
@@ -202,10 +204,9 @@ class AudioTrainerWavLM:
         val_loader,
         use_amp: bool,
         class_weights: Optional[torch.Tensor] = None,
-    ) -> tuple:
+    ) -> dict:
         model.eval()
         total_loss = 0.0
-        total_samples = 0
         all_predictions = []
         all_labels = []
 
@@ -222,7 +223,7 @@ class AudioTrainerWavLM:
             attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
             labels = batch['labels'].to(self.device, non_blocking=True)
 
-            autocast_ctx = torch.amp.autocast(dtype=amp_dtype, device_type='cuda') if use_amp else nullcontext()
+            autocast_ctx = torch.autocast(device_type='cuda', dtype=amp_dtype, enabled=use_amp) if use_amp else nullcontext()
             with autocast_ctx:
                 outputs = model(
                     input_values=input_values, 
@@ -235,18 +236,54 @@ class AudioTrainerWavLM:
                 
                 loss = val_loss_fn(logits, labels_flat)
 
-            batch_size = labels_flat.size(0)
-            total_loss += loss.item() * batch_size
-            total_samples += batch_size
+            total_loss += loss.item()
 
             predictions = logits.argmax(dim=-1)
             all_predictions.extend(predictions.cpu().numpy())
             all_labels.extend(labels_flat.cpu().numpy())
 
-        avg_loss = total_loss / total_samples
-        accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
-        f1_macro = f1_score(all_labels, all_predictions, average='macro', zero_division=0)
-        return avg_loss, accuracy, f1_macro
+        return compute_classification_metrics(
+            labels=np.array(all_labels),
+            predictions=np.array(all_predictions),
+            id2label=self.id2label,
+            total_loss=total_loss,
+            num_batches=len(val_loader),
+        )
+
+    def _save_confusion_matrix_plot(self, confusion_matrix_values: list[list[int]], output_path: Path) -> None:
+        labels = [self.id2label[index] for index in sorted(self.id2label)]
+        cm = np.array(confusion_matrix_values)
+        plt.figure(figsize=(8, 6))
+        plt.imshow(cm, interpolation='nearest', cmap='Blues')
+        plt.title('Validation Confusion Matrix')
+        plt.colorbar()
+        tick_positions = np.arange(len(labels))
+        plt.xticks(tick_positions, labels, rotation=45, ha='right')
+        plt.yticks(tick_positions, labels)
+        threshold = cm.max() / 2.0 if cm.size else 0.0
+        for row_index in range(cm.shape[0]):
+            for col_index in range(cm.shape[1]):
+                plt.text(
+                    col_index,
+                    row_index,
+                    str(cm[row_index, col_index]),
+                    ha='center',
+                    va='center',
+                    color='white' if cm[row_index, col_index] > threshold else 'black',
+                )
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+    def _save_confusion_matrix_csv(self, confusion_matrix_values: list[list[int]], output_path: Path) -> None:
+        labels = [self.id2label[index] for index in sorted(self.id2label)]
+        with output_path.open('w', newline='', encoding='utf-8') as file_handle:
+            writer = csv.writer(file_handle)
+            writer.writerow(['true\\pred', *labels])
+            for label_name, row in zip(labels, confusion_matrix_values):
+                writer.writerow([label_name, *row])
 
     def _plot_training_curves(self, train_losses, val_losses, checkpoint_dir):
         """Genereaza si salveaza grafic cu loss-urile de antrenare si validare"""
@@ -344,6 +381,7 @@ class AudioTrainerWavLM:
         best_val_f1 = 0.0
         best_val_loss = float('inf')
         best_val_acc = 0.0
+        best_metrics: dict[str, object] = {}
         last_train_loss = 0.0
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
@@ -376,7 +414,10 @@ class AudioTrainerWavLM:
             last_train_loss = train_loss
             print(f"Train Loss: {train_loss:.4f}")
 
-            val_loss, val_acc, val_f1 = self.evaluate(model, val_loader, use_amp, class_weights)
+            val_metrics = self.evaluate(model, val_loader, use_amp, class_weights)
+            val_loss = float(val_metrics['avg_loss'])
+            val_acc = float(val_metrics['accuracy'])
+            val_f1 = float(val_metrics['f1_macro'])
             val_losses.append(val_loss)
             print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val F1 Macro: {val_f1:.4f}")
 
@@ -384,6 +425,17 @@ class AudioTrainerWavLM:
                 best_val_f1 = val_f1
                 best_val_loss = val_loss
                 best_val_acc = val_acc
+                best_metrics = {
+                    'epoch': epoch + 1,
+                    'val_loss': val_loss,
+                    'val_accuracy': val_acc,
+                    'val_f1_macro': val_f1,
+                    'val_f1_weighted': float(val_metrics['f1_weighted']),
+                    'val_precision_macro': float(val_metrics['precision_macro']),
+                    'val_recall_macro': float(val_metrics['recall_macro']),
+                    'f1_per_class': val_metrics['f1_per_class'],
+                    'confusion_matrix': val_metrics['confusion_matrix'],
+                }
                 best_model_path = checkpoint_dir / "best_model"
                 print(f"New best model! F1 Macro: {val_f1:.4f} - Saving...")
 
@@ -397,6 +449,16 @@ class AudioTrainerWavLM:
                     model.save_pretrained(best_model_path)
 
                 self.feature_extractor.save_pretrained(best_model_path)
+                with (checkpoint_dir / 'best_model_metrics.json').open('w', encoding='utf-8') as file_handle:
+                    json.dump(best_metrics, file_handle, indent=2)
+                self._save_confusion_matrix_plot(
+                    val_metrics['confusion_matrix'],
+                    checkpoint_dir / 'best_model_confusion_matrix.png',
+                )
+                self._save_confusion_matrix_csv(
+                    val_metrics['confusion_matrix'],
+                    checkpoint_dir / 'best_model_confusion_matrix.csv',
+                )
 
         #calculeaza timp total
         end_time = time.time()
@@ -418,9 +480,11 @@ class AudioTrainerWavLM:
                 "hours": total_time_hours
             },
             "best_model_metrics": {
-                "val_loss": float(best_val_loss),
-                "val_accuracy": float(best_val_acc),
-                "val_f1_macro": float(best_val_f1)
+                **(best_metrics or {
+                    "val_loss": float(best_val_loss),
+                    "val_accuracy": float(best_val_acc),
+                    "val_f1_macro": float(best_val_f1)
+                })
             },
             "final_train_metrics": {
                 "train_loss": float(last_train_loss)
@@ -449,8 +513,8 @@ class AudioTrainerWavLM:
 
         if test_loader is not None:
             print("\nEvaluating on test set...")
-            test_loss, test_acc, test_f1 = self.evaluate(model, test_loader, use_amp, class_weights)
-            print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f} | Test F1 Macro: {test_f1:.4f}")
+            test_metrics = self.evaluate(model, test_loader, use_amp, class_weights)
+            print(f"Test Loss: {test_metrics['avg_loss']:.4f} | Test Acc: {test_metrics['accuracy']:.4f} | Test F1 Macro: {test_metrics['f1_macro']:.4f}")
 
 def main():
     train_config = get_training_config(
