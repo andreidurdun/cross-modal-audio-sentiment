@@ -82,6 +82,19 @@ def parse_reuse_dirs(reuse_from_arg: str | None) -> list[str]:
     return [item.strip() for item in reuse_from_arg.split(';') if item.strip()]
 
 
+def resolve_transcript_overrides(args: argparse.Namespace) -> dict[str, Path]:
+    overrides: dict[str, Path] = {}
+    if args.transcripts_en_json:
+        overrides["text_en"] = Path(args.transcripts_en_json)
+    if args.transcripts_es_json:
+        overrides["text_es"] = Path(args.transcripts_es_json)
+    if args.transcripts_de_json:
+        overrides["text_de"] = Path(args.transcripts_de_json)
+    if args.transcripts_fr_json:
+        overrides["text_fr"] = Path(args.transcripts_fr_json)
+    return overrides
+
+
 class EmbeddingExtractor:
     
     def __init__(
@@ -98,6 +111,7 @@ class EmbeddingExtractor:
         batch_size: int = 32,
         modalities: Optional[List[str]] = None,
         reuse_from_dirs: Optional[List[str]] = None,
+        transcript_paths: Optional[Dict[str, str | Path]] = None,
     ):
         """
         Args:
@@ -117,6 +131,10 @@ class EmbeddingExtractor:
         self.dataset_root = Path(dataset_root)
         self.modalities = list(modalities or ["text_en", "text_es", "audio"])
         self.reuse_from_dirs = [Path(path) for path in (reuse_from_dirs or [])]
+        self.transcript_paths = {
+            modality: Path(path)
+            for modality, path in (transcript_paths or {}).items()
+        }
         
         print("\n" + "="*80)
         print("EMBEDDING EXTRACTOR INITIALIZATION")
@@ -229,7 +247,7 @@ class EmbeddingExtractor:
         for modality in self.modalities:
             if not modality.startswith("text_"):
                 continue
-            transcript_path = data_dir / TRANSCRIPT_FILES[modality]
+            transcript_path = self.transcript_paths.get(modality, data_dir / TRANSCRIPT_FILES[modality])
             if not transcript_path.exists():
                 raise FileNotFoundError(f"Transcripts JSON not found: {transcript_path}")
             transcript_paths[modality] = transcript_path
@@ -713,6 +731,12 @@ def main():
         help='Partition to process (default: train, val). Supports comma-separated values.',
     )
     parser.add_argument(
+        '--dataset-root',
+        type=str,
+        default='MSP_Podcast',
+        help='Dataset root containing Labels, Audios and default transcript JSON files.',
+    )
+    parser.add_argument(
         '--output-dir',
         type=str,
         default=None,
@@ -783,6 +807,30 @@ def main():
         help='Lista de modalitati separate prin virgula. Exemple: text_en,audio sau text_en,text_fr,audio',
     )
     parser.add_argument(
+        '--transcripts-en-json',
+        type=str,
+        default=None,
+        help='Override path for English transcripts JSON.',
+    )
+    parser.add_argument(
+        '--transcripts-es-json',
+        type=str,
+        default=None,
+        help='Override path for Spanish transcripts JSON.',
+    )
+    parser.add_argument(
+        '--transcripts-de-json',
+        type=str,
+        default=None,
+        help='Override path for German transcripts JSON.',
+    )
+    parser.add_argument(
+        '--transcripts-fr-json',
+        type=str,
+        default=None,
+        help='Override path for French transcripts JSON.',
+    )
+    parser.add_argument(
         '--allow-overwrite',
         action='store_true',
         help='Permite suprascrierea fisierelor existente din output-dir.',
@@ -799,6 +847,7 @@ def main():
     output_dir = resolve_output_dir(args.output_dir, modalities)
     output_dir_path = Path(output_dir)
     reuse_from_dirs = parse_reuse_dirs(args.reuse_from)
+    transcript_overrides = resolve_transcript_overrides(args)
 
     if (args.add_german_only or args.add_val_arousal) and not args.allow_overwrite:
         raise ValueError(
@@ -824,6 +873,8 @@ def main():
     print(f"Save individually: {args.save_individually}")
     print(f"Add German Only: {args.add_german_only}")
     print(f"Reuse from dirs: {reuse_from_dirs}")
+    print(f"Dataset root: {args.dataset_root}")
+    print(f"Transcript overrides: { {k: str(v) for k, v in transcript_overrides.items()} }")
     print("="*80 + "\n")
     
 
@@ -841,11 +892,13 @@ def main():
         text_de_checkpoint=normalize_checkpoint_dir(args.de_checkpoint),
         text_fr_checkpoint=normalize_checkpoint_dir(args.fr_checkpoint),
         audio_checkpoint=normalize_checkpoint_dir(args.audio_checkpoint),
+        dataset_root=args.dataset_root,
         projection_dim=projection_dim,
         device=args.device,
         batch_size=args.batch_size,
         modalities=modalities,
         reuse_from_dirs=reuse_from_dirs,
+        transcript_paths=transcript_overrides,
     )
 
     # Extract embeddings logic

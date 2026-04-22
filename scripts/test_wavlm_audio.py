@@ -2,6 +2,7 @@
 Script de testare pentru modelul WavLM Audio.
 Evalueaza pe datele de validare si salveaza scorurile si graficele.
 """
+import argparse
 from pathlib import Path
 from typing import Optional
 import json
@@ -48,7 +49,7 @@ class AudioTester:
         print(f"Using device: {self.device}")
 
     @torch.no_grad()
-    def evaluate(self, model, val_loader: DataLoader) -> dict:
+    def evaluate(self, model, val_loader: DataLoader, loss_fn: Optional[torch.nn.Module] = None) -> dict:
         """Evalueaza modelul si calculeaza metrici."""
         model.eval()
         all_predictions = []
@@ -66,13 +67,15 @@ class AudioTester:
             outputs = model(
                 input_values=input_values,
                 attention_mask=attention_mask,
-                labels=labels,
             )
 
-            total_loss += outputs.loss.item()
-            predictions = outputs.logits.argmax(dim=-1)
+            logits = outputs.logits.float().view(-1, self.num_labels)
+            labels_flat = labels.view(-1)
+            batch_loss_fn = loss_fn or torch.nn.CrossEntropyLoss()
+            total_loss += batch_loss_fn(logits, labels_flat).item()
+            predictions = logits.argmax(dim=-1)
             all_predictions.extend(predictions.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            all_labels.extend(labels_flat.cpu().numpy())
 
         all_predictions = np.array(all_predictions)
         all_labels = np.array(all_labels)
@@ -159,6 +162,7 @@ class AudioTester:
         checkpoint_dir: Path,
         batch_size: int = 8,
         output_dir: Path = Path("results/wavlm_audio"),
+        loss_fn: Optional[torch.nn.Module] = None,
     ):
         """Testeaza modelul si salveaza rezultatele."""
         print("="*80)
@@ -188,7 +192,7 @@ class AudioTester:
         )
         
         print(f"\nEvaluating on {len(val_dataset)} validation samples...")
-        results = self.evaluate(model, val_loader)
+        results = self.evaluate(model, val_loader, loss_fn=loss_fn)
         
         # Save results
         results_json_path = output_dir / "test_results.json"
@@ -220,13 +224,47 @@ class AudioTester:
 
 def main():
     """Main testing function."""
-    
+
+    parser = argparse.ArgumentParser(description="Testeaza un checkpoint WavLM audio sau audio KD")
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=Path("checkpoints/wavlm_audio"),
+        help="Directorul checkpoint-ului care contine best_model",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("results/wavlm_audio"),
+        help="Directorul in care se salveaza rezultatele testarii",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=Path("MSP_Podcast"),
+        help="Directorul dataset-ului MSP_Podcast",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=8,
+        help="Batch size pentru evaluare",
+    )
+    parser.add_argument(
+        "--eval-profile",
+        type=str,
+        choices=["standard", "kd-validation"],
+        default="standard",
+        help="Profil de evaluare: standard pentru test generic, kd-validation pentru a replica validarea din training KD",
+    )
+    args = parser.parse_args()
+
     # Paths
-    data_dir = Path("MSP_Podcast")
+    data_dir = args.data_dir
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
     audio_dir = data_dir / "Audios"
-    checkpoint_dir = Path("checkpoints/wavlm_audio")
-    output_dir = Path("results/wavlm_audio")
+    checkpoint_dir = args.checkpoint_dir
+    output_dir = args.output_dir
     
     # Verify files
     if not labels_csv.exists():
@@ -245,8 +283,7 @@ def main():
         labels_csv=str(labels_csv),
         partition="Development",
         modalities=['audio'],
-        use_cache=True,
-        max_workers=8
+       
     )
     
     print(f"[OK] Data loaded successfully!")
@@ -255,24 +292,52 @@ def main():
     # Create tester and wrap dataset
     tester = AudioTester()
     feature_extractor = AutoFeatureExtractor.from_pretrained("microsoft/wavlm-base-plus")
+
+    if args.eval_profile == "kd-validation":
+        dataset_kwargs = {
+            "max_seconds": 5,
+            "do_resample": False,
+            "label_key": "label_id",
+            "include_attention_mask": True,
+            "extractor_padding": False,
+            "extractor_truncation": False,
+            "extractor_max_length": None,
+        }
+
+        class_weights_dataset = MSP_Podcast_Dataset(
+            audio_root=str(audio_dir),
+            labels_csv=str(labels_csv),
+            partition="Train",
+            modalities=[],
+        )
+        all_train_labels = class_weights_dataset.metadata["label_id"].astype(int).to_numpy()
+        raw_weights = class_weights_dataset.get_class_weights(all_train_labels, device=tester.device)
+        loss_fn: Optional[torch.nn.Module] = torch.nn.CrossEntropyLoss(weight=torch.sqrt(raw_weights))
+    else:
+        dataset_kwargs = {
+            "max_seconds": None,
+            "do_resample": True,
+            "label_key": "label_id",
+            "include_attention_mask": True,
+            "extractor_padding": True,
+            "extractor_truncation": True,
+            "extractor_max_length": 160000,
+        }
+        loss_fn = None
+
     val_dataset = AudioWaveLMDataset(
         val_dataset_msp,
         feature_extractor,
-        max_seconds=None,
-        do_resample=True,
-        label_key="label_id",
-        include_attention_mask=True,
-        extractor_padding=True,
-        extractor_truncation=True,
-        extractor_max_length=160000,
+        **dataset_kwargs,
     )
     
     # Testing
     tester.test(
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
-        batch_size=8,
+        batch_size=args.batch_size,
         output_dir=output_dir,
+        loss_fn=loss_fn,
     )
 
 

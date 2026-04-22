@@ -30,6 +30,21 @@ def load_peft_audio_classification_model(
     problem_type: Optional[str] = None,
 ):
     checkpoint_path = Path(checkpoint_path)
+    adapter_config_path = checkpoint_path / "adapter_config.json"
+
+    if not adapter_config_path.exists():
+        model_kwargs = {
+            "ignore_mismatched_sizes": True,
+        }
+        if num_labels is not None:
+            model_kwargs["num_labels"] = num_labels
+        if problem_type is not None:
+            model_kwargs["problem_type"] = problem_type
+
+        model = AutoModelForAudioClassification.from_pretrained(checkpoint_path, **model_kwargs)
+        _ensure_audio_regression_head_shape(model, num_labels)
+        return model
+
     peft_config = PeftConfig.from_pretrained(checkpoint_path)
 
     base_model_kwargs = {

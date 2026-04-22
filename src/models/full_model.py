@@ -111,6 +111,7 @@ class MultimodalEmotionModel(nn.Module):
         }
         
         self.freeze_backbones = freeze_backbones
+        self.regression = regression
         if freeze_backbones:
             self._freeze_backbones()
         
@@ -260,12 +261,12 @@ class MultimodalEmotionModel(nn.Module):
         Predictie cu interpretare rezultate.
         
         Returns:
-            predictions: (batch_size, num_classes) - probabilitati sigmoid
+            predictions: (batch_size, num_classes) - probabilitati pentru clasificare sau valori brute pentru regresie
             predicted_classes: (batch_size,) - clasa cu scorul maxim
         """
         self.eval()
         with torch.no_grad():
-            predictions = self.forward(
+            logits = self.forward(
                 text_en=text_en,
                 text_es=text_es,
                 text_de=text_de,
@@ -277,6 +278,7 @@ class MultimodalEmotionModel(nn.Module):
                 text_fr_emb=text_fr_emb,
                 audio_emb=audio_emb,
             )
+            predictions = logits if self.regression else torch.softmax(logits, dim=-1)
             predicted_classes = predictions.argmax(dim=-1)
         
         return predictions, predicted_classes
