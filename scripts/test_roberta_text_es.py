@@ -30,7 +30,7 @@ except ModuleNotFoundError:
 PROJECT_ROOT = project_root()
 
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, DataCollatorWithPadding
+from transformers import AutoConfig, AutoTokenizer, DataCollatorWithPadding
 from peft import AutoPeftModelForSequenceClassification
 
 from src.data.dataset import MSP_Podcast_Dataset
@@ -56,12 +56,18 @@ class TextEsTester:
         all_predictions = []
         all_labels = []
         total_loss = 0.0
+        max_position_embeddings = int(getattr(model.config, "max_position_embeddings", 512))
+        max_seq_len = max(8, max_position_embeddings - 2)
 
         progress_bar = tqdm(val_loader, desc="Evaluating")
         for batch in progress_bar:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"].to(self.device)
+
+            if input_ids.size(1) > max_seq_len:
+                input_ids = input_ids[:, :max_seq_len]
+                attention_mask = attention_mask[:, :max_seq_len]
 
             outputs = model(
                 input_ids=input_ids,
@@ -221,13 +227,21 @@ class TextEsTester:
 
 def main():
     """Main testing function."""
-    
+    import argparse
+    parser = argparse.ArgumentParser(description="Testeaza un checkpoint RoBERTa Text ES")
+    parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/roberta_text_es"))
+    parser.add_argument("--output-dir", type=Path, default=Path("results/roberta_text_es"))
+    parser.add_argument("--transcript-json", type=Path, default=None, help="Calea catre Transcription_es JSON. Implicit: MSP_Podcast/Transcription_es.json")
+    parser.add_argument("--partition", type=str, default="Development", help="Partitia de evaluat: Development, Test1, Train")
+    parser.add_argument("--batch-size", type=int, default=64)
+    args = parser.parse_args()
+
     # Paths
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
-    transcripts_es_json = data_dir / "Transcription_es.json"
-    checkpoint_dir = Path("checkpoints/roberta_text_es")
-    output_dir = Path("results/roberta_text_es")
+    transcripts_es_json = args.transcript_json or (data_dir / "Transcription_es.json")
+    checkpoint_dir = args.checkpoint_dir
+    output_dir = args.output_dir
     
     # Verificare fisiere
     if not labels_csv.exists():
@@ -245,10 +259,8 @@ def main():
         audio_root=str(data_dir / "Audios"),
         labels_csv=str(labels_csv),
         transcripts_es_json=str(transcripts_es_json),
-        partition="Development",
+        partition=args.partition,
         modalities=['text_es'],
-        use_cache=True,
-        max_workers=8
     )
     
     print(f"[OK] Data loaded successfully!")
@@ -260,11 +272,14 @@ def main():
     if not best_model_path.exists():
         raise FileNotFoundError(f"Model not found at: {best_model_path}")
     tokenizer = AutoTokenizer.from_pretrained(best_model_path)
+    model_config = AutoConfig.from_pretrained(best_model_path)
+    max_position_embeddings = int(getattr(model_config, "max_position_embeddings", 512))
+    safe_max_length = max(8, min(512, max_position_embeddings - 2))
     val_dataset = TextEncoderDataset(
         val_dataset_msp,
         tokenizer,
         text_fields=["text_es"],
-        max_length=512,
+        max_length=safe_max_length,
         padding=True,
         sanitize_input_ids=True,
     )
@@ -273,7 +288,7 @@ def main():
     tester.test(
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
-        batch_size=64,
+        batch_size=args.batch_size,
         output_dir=output_dir,
     )
 

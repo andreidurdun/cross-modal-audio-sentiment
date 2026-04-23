@@ -82,7 +82,7 @@
     "use_amp": true,
     "num_workers": 0,
     "temperature": 2.0,
-    "alpha": 0.7
+    "alpha": 0.5
   },
   "wavlm_audio_regression": {
     "num_epochs": 5,

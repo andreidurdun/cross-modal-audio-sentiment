@@ -252,9 +252,16 @@ class CCMTTester:
         if model_path.exists():
             checkpoint = torch.load(model_path, map_location=self.device)
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                state_dict = checkpoint['model_state_dict']
             else:
-                model.load_state_dict(checkpoint, strict=False)
+                state_dict = checkpoint
+
+            load_result = model.load_state_dict(state_dict, strict=False)
+            if load_result.missing_keys or load_result.unexpected_keys:
+                print(
+                    f"[warn] state_dict partial load: missing={len(load_result.missing_keys)}, "
+                    f"unexpected={len(load_result.unexpected_keys)}"
+                )
             print(f"[OK] Model weights loaded from: {model_path}")
         else:
             print(f"[!]  Model weights not found at: {model_path}")
@@ -326,6 +333,18 @@ def main():
         default=None,
         help="Director pentru rezultate.",
     )
+    parser.add_argument(
+        "--partition",
+        type=str,
+        default="val",
+        help="Partitia de evaluat: val, test1. Implicit: val",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Batch size pentru evaluare.",
+    )
     args = parser.parse_args()
     
     # Paths
@@ -356,7 +375,7 @@ def main():
     print("\nLoading Validation dataset...")
     val_dataset = PrecomputedEmbeddingsDataset(
         embeddings_dir=str(embeddings_dir),
-        partition="val",
+        partition=args.partition,
         modalities=modalities,
     )
     
@@ -371,7 +390,7 @@ def main():
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
         model_config=saved_model_config,
-        batch_size=32,
+        batch_size=args.batch_size,
         output_dir=output_dir,
     )
 

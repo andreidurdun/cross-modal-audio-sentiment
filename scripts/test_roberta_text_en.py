@@ -218,13 +218,21 @@ class TextEnTester:
 
 def main():
     """Main testing function."""
-    
+    import argparse
+    parser = argparse.ArgumentParser(description="Testeaza un checkpoint RoBERTa Text EN")
+    parser.add_argument("--checkpoint-dir", type=Path, default=Path("checkpoints/roberta_text_en"))
+    parser.add_argument("--output-dir", type=Path, default=Path("results/roberta_text_en"))
+    parser.add_argument("--transcript-json", type=Path, default=None, help="Calea catre Transcription_en JSON. Implicit: MSP_Podcast/Transcription_en.json")
+    parser.add_argument("--partition", type=str, default="Development", help="Partitia de evaluat: Development, Test1, Train")
+    parser.add_argument("--batch-size", type=int, default=32)
+    args = parser.parse_args()
+
     # Paths
     data_dir = Path("MSP_Podcast")
     labels_csv = data_dir / "Labels" / "labels_consensus.csv"
-    transcripts_en_json = data_dir / "Transcription_en.json"
-    checkpoint_dir = Path("checkpoints/roberta_text_en")
-    output_dir = Path("results/roberta_text_en")
+    transcripts_en_json = args.transcript_json or (data_dir / "Transcription_en.json")
+    checkpoint_dir = args.checkpoint_dir
+    output_dir = args.output_dir
     
     # Verificare fisiere
     if not labels_csv.exists():
@@ -242,10 +250,8 @@ def main():
         audio_root=str(data_dir / "Audios"),
         labels_csv=str(labels_csv),
         transcripts_en_json=str(transcripts_en_json),
-        partition="Development",
+        partition=args.partition,
         modalities=['text_en'],
-        use_cache=True,
-        max_workers=8
     )
     
     print(f"[OK] Data loaded successfully!")
@@ -270,7 +276,7 @@ def main():
     tester.test(
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
-        batch_size=32,
+        batch_size=args.batch_size,
         output_dir=output_dir,
     )
 
