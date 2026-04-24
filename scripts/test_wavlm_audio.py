@@ -318,25 +318,17 @@ def main():
         all_train_labels = class_weights_dataset.metadata["label_id"].astype(int).to_numpy()
         raw_weights = class_weights_dataset.get_class_weights(all_train_labels, device=tester.device)
         loss_fn: Optional[torch.nn.Module] = torch.nn.CrossEntropyLoss(weight=torch.sqrt(raw_weights))
-        eval_batch_size = args.batch_size * 2
-        print("[profile] kd-validation active")
-        print(f"[profile] dataset kwargs: {dataset_kwargs}")
-        print(f"[profile] eval batch size (aligned with KD training val): {eval_batch_size}")
     else:
         dataset_kwargs = {
-            "max_seconds": None,
-            "do_resample": True,
-            "label_key": "label_id",
-            "include_attention_mask": True,
-            "extractor_padding": True,
-            "extractor_truncation": True,
-            "extractor_max_length": 160000,
+            "max_seconds": 5,
+            "do_resample": False,
+            "label_key": "label",
+            "include_attention_mask": False,
+            "extractor_padding": False,
+            "extractor_truncation": False,
+            "extractor_max_length": None,
         }
         loss_fn = None
-        eval_batch_size = args.batch_size
-        print("[profile] standard active")
-        print(f"[profile] dataset kwargs: {dataset_kwargs}")
-        print(f"[profile] eval batch size: {eval_batch_size}")
 
     val_dataset = AudioWaveLMDataset(
         val_dataset_msp,
@@ -348,7 +340,7 @@ def main():
     tester.test(
         val_dataset=val_dataset,
         checkpoint_dir=checkpoint_dir,
-        batch_size=eval_batch_size,
+        batch_size=args.batch_size,
         output_dir=output_dir,
         loss_fn=loss_fn,
     )
