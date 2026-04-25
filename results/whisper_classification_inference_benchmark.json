@@ -1,0 +1,14 @@
+{
+  "model": "whisper_classification",
+  "batch_size": 8,
+  "warmup": 3,
+  "repeats": 20,
+  "device": "cuda",
+  "metrics": {
+    "batch_size": 8.0,
+    "mean_inference_ms": 180.1411399967037,
+    "min_inference_ms": 173.38609998114407,
+    "max_inference_ms": 243.08769998606294,
+    "throughput_samples_per_sec": 44.40962236691956
+  }
+}
