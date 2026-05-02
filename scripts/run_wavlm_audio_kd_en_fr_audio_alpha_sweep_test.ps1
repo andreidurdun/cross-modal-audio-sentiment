@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$PythonExe,
-    [float[]]$Alphas = @(0.8, 0.9),
+    [float[]]$Alphas = @(0.6),
     [string]$StudentCheckpointBase = 'checkpoints\wavlm_audio_kd_text_en_text_fr_audio_alpha',
     [string]$ResultsBase = 'results\wavlm_audio_kd_text_en_text_fr_audio_alpha',
     [string]$EvalProfile = 'kd-validation',

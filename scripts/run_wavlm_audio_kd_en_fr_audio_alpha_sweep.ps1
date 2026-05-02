@@ -4,7 +4,7 @@ param(
     [string]$TeacherCheckpointDir = 'checkpoints\ccmt_multimodal_text_en_text_fr_audio_retrained',
     [string]$TeacherEmbeddingsDir = 'MSP_Podcast\embeddings_text_en_text_fr_audio',
     [string]$TeacherModalities = 'text_en,text_fr,audio',
-    [float[]]$Alphas = @(0.8, 0.9),
+    [float[]]$Alphas = @(0.2, 0.3, 0.1),
     [string]$StudentCheckpointBase = 'checkpoints\wavlm_audio_kd_text_en_text_fr_audio_alpha',
     [switch]$AllowOverwrite
 )
